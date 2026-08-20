@@ -306,7 +306,8 @@ def build_html(
 
         .profile-links a {{
             color: var(--muted);
-            text-decoration: none;
+            text-decoration: underline;
+            text-underline-offset: 3px;
         }}
 
         .profile-links a:hover {{
