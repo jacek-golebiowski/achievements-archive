@@ -1,0 +1,10 @@
+completions/
+incomplete/
+site/
+.wrangler
+ForensicFlubber.jpeg
+rejected_files.txt
+
+.DS_Store
+__pycache__/
+*.pyc
