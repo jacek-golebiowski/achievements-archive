@@ -36,11 +36,8 @@ from pathlib import Path
 from typing import Iterable
 
 from config import (
-    ARCHIVE_TITLE,
     CLOUDFLARE_PROJECT_NAME,
-    GAMERTAG,
     GITHUB_URL,
-    PROFILE_IMAGE_NAME,
 )
 
 
@@ -143,6 +140,7 @@ def build_html(
     output_path: Path,
     *,
     archive_title: str,
+    gamertag: str,
     embed_images: bool,
     copied_images_dir: Path | None,
     profile_image_path: Path | None,
@@ -171,7 +169,7 @@ def build_html(
                 >
                     <img
                         src="{profile_image_src}"
-                        alt="{html.escape(GAMERTAG)} TrueAchievements profile snapshot"
+                        alt="{html.escape(gamertag)} TrueAchievements profile snapshot"
                     >
                 </button>
             </section>
@@ -245,6 +243,7 @@ def build_html(
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{html.escape(archive_title)}</title>
+    <link rel="icon" type="image/png" href="/favicon.png">
     <style>
         :root {{
             color-scheme: dark;
@@ -811,13 +810,42 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
+def find_profile_image(script_dir: Path) -> Path | None:
+    profile_dir = script_dir / "profilepic"
+
+    if not profile_dir.exists():
+        return None
+
+    profile_images = [
+        path
+        for path in profile_dir.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in SUPPORTED_EXTENSIONS
+    ]
+
+    if not profile_images:
+        return None
+
+    return sorted(profile_images)[0]
+
 
 def main() -> int:
     args = parse_args()
     script_dir = Path(__file__).resolve().parent
     completions_dir = script_dir / "completions"
     incomplete_dir = script_dir / "incomplete"
-    profile_image_path = script_dir / PROFILE_IMAGE_NAME
+    profile_image_path = find_profile_image(script_dir)
+
+    if profile_image_path is None:
+        print(
+            "No profile image found.\n"
+            "Put a profile image inside the profilepic/ folder.",
+            file=sys.stderr,
+        )
+        return 1
+
+    gamertag = profile_image_path.stem
+    archive_title = f"{gamertag}'s Achievements Archive"
 
     entries, rejected = discover_entries(completions_dir, incomplete_dir)
 
@@ -838,13 +866,19 @@ def main() -> int:
     if site_dir.exists():
         shutil.rmtree(site_dir)
     site_dir.mkdir(parents=True)
+    
+    favicon_path = script_dir / "favicon.png"
+
+    if favicon_path.exists():
+        shutil.copy2(favicon_path, site_dir / "favicon.png")
 
     copied_images_dir = prepare_external_images(entries, site_dir)
     html_path = site_dir / "index.html"
     build_html(
         entries,
         html_path,
-        archive_title=ARCHIVE_TITLE,
+        archive_title=archive_title,
+        gamertag=gamertag,
         embed_images=False,
         copied_images_dir=copied_images_dir,
         profile_image_path=profile_image_path,
