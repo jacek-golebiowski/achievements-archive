@@ -1,9 +1,7 @@
-completions/
-incomplete/
 site/
 .wrangler
-profilepic/
-rejected_files.txt
+deployment_command.txt
+CHROME_DATA_DOWNLOAD/
 
 .DS_Store
 __pycache__/

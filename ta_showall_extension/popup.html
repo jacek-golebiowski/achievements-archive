@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}
+body{margin:0;padding:17px;width:370px;background:#15191e;color:#eef1f6;font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+h1{font-size:17px;line-height:1.3;margin:0 0 7px}
+p{line-height:1.48;color:#bbc7d6;margin:8px 0 13px}
+label{display:block;margin:13px 0 6px;color:#e7ecf4;font-weight:650}
+select,input{width:100%;border:1px solid #4b596b;background:#252d37;color:#fff;border-radius:6px;padding:9px;font:inherit}
+input[type=file]{font-size:12px;padding:8px}
+button{display:block;width:100%;padding:11px;border:0;border-radius:7px;background:#3e91f7;color:#fff;font:inherit;font-weight:700;cursor:pointer;margin-top:9px}
+button.secondary{background:#313c48}label.fresh{display:flex;gap:9px;align-items:center;font-weight:500;margin:10px 0 0;color:#d7e5f8}label.fresh input{width:auto;margin:0}button:disabled{opacity:.45;cursor:not-allowed}
+#status{white-space:pre-wrap;line-height:1.48;background:#222a33;border-radius:7px;padding:12px;min-height:57px;font-size:12px}
+#counts,#fileInfo{color:#b7c9dc;font-size:12px;line-height:1.55;margin-top:9px;white-space:pre-wrap}
+small{color:#9fb1c5;line-height:1.45;display:block;margin-top:7px}
+hr{border:0;border-top:1px solid #35404d;margin:17px 0 12px}
+</style></head><body>
+<h1>TA Show-All Collector v3.4</h1>
+<p>Open your TrueAchievements games list and click <b>Show all</b>. For your first run, choose <b>Fresh start</b>. On every later run, select the most recently exported <code>games.json</code> so existing image records can be skipped.</p>
+<label for="database">1. Database reference</label>
+<input type="file" id="database" accept=".json,application/json">
+<div id="fileInfo">Choose your latest games.json, or use Fresh start if you deleted the old database.</div>
+<label class="fresh"><input type="checkbox" id="fresh"> Fresh start (I have no games.json to import)</label>
+<small>Fresh start ignores any older Chrome extension storage and treats every visible game as new. Use it only once. Future runs should read your latest exported games.json.</small>
+<label for="mode">2. What to download</label>
+<select id="mode"><option value="missing">Missing images only</option><option value="incomplete">New games + incomplete achievements (including newly completed)</option></select>
+<label for="folder">Download subfolder</label>
+<input id="folder" value="ta-collector" spellcheck="false">
+<small>Relative to Chrome's Downloads location. Data is exported to this folder's <code>data/</code> subfolder.</small>
+<button id="start" disabled>3. Start synchronization</button>
+<button id="stop" class="secondary" disabled>Stop after current download</button>
+<p id="status">Ready.</p>
+<div id="counts"></div>
+<hr>
+<button id="export" class="secondary">Export saved data now</button>
+<small>Downloads are sequential (10-second pause). The extension saves results after each image and automatically overwrites <code>games.json</code> and <code>ta_failures.json</code> when the run finishes, stops, or pauses after repeated server errors. No Full Refresh or legacy-state migration. The first run may start with an empty database.</small>
+<script src="state.js"></script><script src="popup.js"></script>
+</body></html>

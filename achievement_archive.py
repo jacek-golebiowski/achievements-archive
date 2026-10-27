@@ -1,909 +1,398 @@
 #!/usr/bin/env python3
+"""Build and optionally publish the Arctic / Pistachio TrueAchievements archive.
+
+Input: chrome_data_download/ta-collector/data/games.json and
+       chrome_data_download/ta-collector/images/<game-id>.png (JPEG inside PNG
+       filenames is supported). No old image-filename archive is consulted.
+
+Usage:
+  python3 achievement_archive.py
+  python3 achievement_archive.py --collector-dir /path/to/ta-collector
+  python3 achievement_archive.py --publish
 """
-Build a portable gaming-achievement archive from image filenames.
-
-Expected folder layout:
-    achievement_archive.py
-    completions/
-        YYYY-MM-DD__Game Title.jpg
-    incomplete/
-        YYYY-MM-DD__Game Title.jpg
-
-Example filenames:
-    2017-02-09__Murdered Soul Suspect.jpg
-    2021-10-20__Halo Infinite.png
-
-Run on macOS with:
-    python3 achievement_archive.py --publish
-
-The script reads both folders from the directory containing the script and
-writes achievement_archive.html into that same directory.
-"""
-
 from __future__ import annotations
 
 import argparse
-import base64
 import html
 import json
 import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
-from datetime import date, datetime
+from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any
 
-from config import (
-    CLOUDFLARE_PROJECT_NAME,
-    GITHUB_URL,
-)
+from config import CLOUDFLARE_PROJECT_NAME, GITHUB_URL, GAMERTAG
 
-
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-FILENAME_PATTERN = re.compile(
-    r"^(?P<date>\d{4}-\d{2}-\d{2})__(?P<title>.+)$",
-    flags=re.IGNORECASE,
-)
-
-
-@dataclass(frozen=True)
-class GameEntry:
-    title: str
-    completed_on: date
-    incomplete: bool
-    source_path: Path
-    output_image_name: str
-
-    @property
-    def status(self) -> str:
-        return "Incomplete" if self.incomplete else "Completed"
-
-    @property
-    def sort_title(self) -> str:
-        return self.title.casefold()
-
-    @property
-    def iso_date(self) -> str:
-        return self.completed_on.isoformat()
-
-    @property
-    def display_date(self) -> str:
-        return self.completed_on.strftime("%-d %B %Y")
+ROOT = Path(__file__).resolve().parent
+ASSETS = ROOT / 'assets'
+VALID_IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp')
+GIF_SIGNATURE = b'GIF8'
+ICON = '''<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.5 8h11a4 4 0 0 1 3.9 3.1l1 5a2.4 2.4 0 0 1-4 2.2l-2.3-2.3H7.9l-2.3 2.3a2.4 2.4 0 0 1-4-2.2l1-5A4 4 0 0 1 6.5 8Z"/><path d="M7.5 11v4M5.5 13h4"/><circle cx="16.5" cy="11.5" r=".7" fill="currentColor" stroke="none"/><circle cx="18" cy="14" r=".7" fill="currentColor" stroke="none"/></svg>'''
+SEARCH_ICON = '''<svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></svg>'''
+GRID_ICON = '''<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>'''
+LIST_ICON = '''<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h1M3 12h1M3 18h1"/></svg>'''
 
 
-def parse_filename(path: Path, *, incomplete: bool) -> GameEntry:
-    match = FILENAME_PATTERN.fullmatch(path.stem)
-    if not match:
-        raise ValueError("expected YYYY-MM-DD__Game Title.ext")
+def esc(value: Any) -> str:
+    return html.escape(str(value), quote=True)
 
+
+def integer(n: Any) -> str:
     try:
-        parsed_date = datetime.strptime(match.group("date"), "%Y-%m-%d").date()
-    except ValueError as exc:
-        raise ValueError("invalid calendar date") from exc
+        return f'{int(n):,}'
+    except (TypeError, ValueError):
+        return '0'
 
-    title = match.group("title").strip()
-    if not title:
-        raise ValueError("game title is empty")
 
-    return GameEntry(
-        title=title,
-        completed_on=parsed_date,
-        incomplete=incomplete,
-        source_path=path,
-        output_image_name=f"{'incomplete' if incomplete else 'completions'}/{path.name}",
-    )
-
-
-def discover_entries(
-    completions_dir: Path,
-    incomplete_dir: Path,
-) -> tuple[list[GameEntry], list[tuple[Path, str]]]:
-    entries: list[GameEntry] = []
-    rejected: list[tuple[Path, str]] = []
-
-    for folder, is_incomplete in (
-        (completions_dir, False),
-        (incomplete_dir, True),
-    ):
-        if not folder.exists():
-            folder.mkdir(parents=True, exist_ok=True)
-
-        for path in sorted(folder.iterdir()):
-            if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
-                continue
-
-            try:
-                entries.append(parse_filename(path, incomplete=is_incomplete))
-            except ValueError as exc:
-                rejected.append((path, str(exc)))
-
-    entries.sort(key=lambda item: (item.completed_on, item.sort_title))
-    return entries, rejected
-
-
-def image_data_uri(path: Path) -> str:
-    mime = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".webp": "image/webp",
-    }[path.suffix.lower()]
-
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
-
-
-def build_html(
-    entries: list[GameEntry],
-    output_path: Path,
-    *,
-    archive_title: str,
-    gamertag: str,
-    embed_images: bool,
-    copied_images_dir: Path | None,
-    profile_image_path: Path | None,
-) -> None:
-    completed_count = sum(not item.incomplete for item in entries)
-    incomplete_count = len(entries) - completed_count
-    years = sorted({item.completed_on.year for item in entries})
-    
-    profile_image_html = ""
-
-    if profile_image_path is not None and profile_image_path.exists():
-        if embed_images:
-            profile_image_src = image_data_uri(profile_image_path)
-        else:
-            assert copied_images_dir is not None
-            profile_output = copied_images_dir / f"profile{profile_image_path.suffix.lower()}"
-            shutil.copy2(profile_image_path, profile_output)
-            profile_image_src = f"images/{profile_output.name}"
-
-        profile_image_html = f"""
-            <section class="profile-section">
-                <button
-                    class="image-button profile-image-button"
-                    type="button"
-                    aria-label="Open TrueAchievements profile snapshot"
-                >
-                    <img
-                        src="{profile_image_src}"
-                        alt="{html.escape(gamertag)} TrueAchievements profile snapshot"
-                    >
-                </button>
-            </section>
-        """
-    
-    completion_percentage = (
-    completed_count / len(entries) * 100
-    if entries else 0
-)
-    
-    profile_snapshot = "Not available"
-    if profile_image_path is not None and profile_image_path.exists():
-        created_timestamp = getattr(
-            profile_image_path.stat(),
-            "st_birthtime",
-            profile_image_path.stat().st_mtime,
-        )
-        profile_snapshot = datetime.fromtimestamp(created_timestamp).strftime("%-d %B %Y")
-    
-    cards = []
-    for index, item in enumerate(entries):
-        if embed_images:
-            image_src = image_data_uri(item.source_path)
-        else:
-            assert copied_images_dir is not None
-            image_src = f"images/{item.output_image_name}"
-
-        status_class = "incomplete" if item.incomplete else "completed"
-
-        cards.append(
-            f"""
-            <article
-                class="game-card"
-                data-title="{html.escape(item.sort_title, quote=True)}"
-                data-game-title="{html.escape(item.title, quote=True)}"
-                data-date="{item.iso_date}"
-                data-year="{item.completed_on.year}"
-                data-status="{status_class}"
-                data-completion-status="{status_class}"
-            >
-                <span class="scraper-status">STATUS: {status_class}</span>
-                <button class="image-button" type="button" aria-label="Open {html.escape(item.title)} image">
-                    <img
-                        src="{image_src}"
-                        alt="{html.escape(item.title)} achievement summary"
-                        loading="lazy"
-                    >
-                </button>
-            </article>
-            """
-        )
-
-    year_options = "\n".join(
-        f'<option value="{year}">{year}</option>' for year in years
-    )
-
-    archive_data = [
-        {
-            "title": item.title,
-            "date": item.iso_date,
-            "status": item.status,
-            "completion_status": "incomplete" if item.incomplete else "completed",
-            "filename": item.source_path.name,
-        }
-        for item in entries
-    ]
-
-    document = f"""<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{html.escape(archive_title)}</title>
-    <link rel="icon" type="image/png" href="/favicon.png">
-    <style>
-        :root {{
-            color-scheme: dark;
-            --background: #0c1723;
-            --panel: #142334;
-            --panel-hover: #1a2d42;
-            --text: #f5f7fa;
-            --muted: #aab8c7;
-            --border: #2b4157;
-            --accent: #9bf000;
-            --danger: #ff6b6b;
-        }}
-
-        * {{
-            box-sizing: border-box;
-        }}
-
-        body {{
-            margin: 0;
-            background: var(--background);
-            color: var(--text);
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        }}
-
-        header {{
-            padding: 22px clamp(18px, 4vw, 56px) 18px;
-            background: var(--background);
-        }}
-        
-        .sticky-toolbar {{
-            padding: 10px clamp(18px, 4vw, 56px) 16px;
-
-            background: rgba(12, 23, 35, 0.96);
-            border-bottom: 1px solid var(--border);
-        }}
-
-        .sticky-toolbar .summary {{
-            margin-bottom: 12px;
-        }}
-
-        h1 {{
-            margin: 0 0 6px;
-            color: var(--accent);
-            font-size: clamp(1.6rem, 4vw, 2.5rem);
-        }}
-
-        .summary {{
-            margin: 0;
-            color: var(--muted);
-        }}
-
-        .profile-links {{
-            display: flex;
-            gap: 14px;
-            margin-top: 6px;
-            color: var(--muted);
-            font-size: 0.9rem;
-        }}
-
-        .profile-links a {{
-            color: var(--muted);
-            text-decoration: underline;
-            text-underline-offset: 3px;
-        }}
-
-        .profile-links a:hover {{
-            color: var(--accent);
-            text-decoration: underline;
-        }}
-
-        .controls {{
-            display: grid;
-            grid-template-columns: minmax(180px, 2fr) repeat(3, minmax(145px, 1fr));
-            gap: 12px;
-            margin-top: 0;
-        }}
-
-        label {{
-            display: grid;
-            gap: 6px;
-            color: var(--muted);
-            font-size: 0.88rem;
-        }}
-
-        input,
-        select {{
-            width: 100%;
-            min-height: 42px;
-            padding: 9px 11px;
-            color: var(--text);
-            background: var(--panel);
-            border: 1px solid var(--border);
-            border-radius: 9px;
-            font: inherit;
-        }}
-
-        main {{
-            padding: 26px clamp(18px, 4vw, 56px) 70px;
-        }}
-        
-        .profile-section {{
-            width: min(100%, 400px);
-            margin: 16px 0 12px;
-            text-align: left;
-        }}
-
-        .profile-image-button {{
-            overflow: hidden;
-            border-radius: 18px;
-        }}
-
-        .profile-section img {{
-            display: block;
-            width: 100%;
-            height: auto;
-        }}
-
-        #empty-state {{
-            display: none;
-            color: var(--muted);
-            text-align: center;
-            padding: 80px 20px;
-        }}
-
-        #gallery {{
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-            gap: 22px;
-        }}
-
-        .game-card {{
-            position: relative;
-            overflow: hidden;
-            border-radius: 14px;
-            transition: transform 160ms ease;
-        }}
-
-        .scraper-status {{
-            position: absolute;
-            width: 1px;
-            height: 1px;
-            padding: 0;
-            margin: -1px;
-            overflow: hidden;
-            clip: rect(0, 0, 0, 0);
-            white-space: nowrap;
-            border: 0;
-        }}
-
-        .game-card:hover {{
-            transform: translateY(-2px);
-        }}
-
-        .image-button {{
-            position: relative;
-            display: block;
-            width: 100%;
-            padding: 0;
-            border: 0;
-            background: transparent;
-            cursor: zoom-in;
-        }}
-
-        .game-card img {{
-            display: block;
-            width: 100%;
-            height: auto;
-            background: #08111a;
-        }}
-
-        dialog {{
-            width: min(95vw, 1500px);
-            max-width: none;
-            padding: 0;
-            overflow: hidden;
-            background: #050a10;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-        }}
-
-        dialog::backdrop {{
-            background: rgba(0, 0, 0, 0.86);
-        }}
-
-        dialog img {{
-            display: block;
-            max-width: 95vw;
-            max-height: 90vh;
-            margin: auto;
-        }}
-
-        .close-dialog {{
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            width: 40px;
-            height: 40px;
-            color: white;
-            background: rgba(0, 0, 0, 0.72);
-            border: 1px solid #64748b;
-            border-radius: 50%;
-            font-size: 1.4rem;
-            cursor: pointer;
-        }}
-
-        footer {{
-            padding: 0 20px 30px;
-            color: var(--muted);
-            text-align: center;
-            font-size: 0.85rem;
-        }}
-
-        @media (max-width: 850px) {{
-            .controls {{
-                grid-template-columns: 1fr 1fr;
-            }}
-        }}
-
-        @media (max-width: 540px) {{
-            .controls {{
-                grid-template-columns: 1fr;
-            }}
-
-            #gallery {{
-                grid-template-columns: 1fr;
-            }}
-
-            input,
-            select {{
-                font-size: 16px;
-            }}
-        }}
-
-        @media print {{
-            header {{
-                position: static;
-            }}
-
-            .controls,
-            footer {{
-                display: none;
-            }}
-
-            body {{
-                background: white;
-                color: black;
-            }}
-
-            #gallery {{
-                display: block;
-            }}
-
-            .game-card {{
-                break-inside: avoid;
-                margin-bottom: 20px;
-                border: 1px solid #bbb;
-                background: white;
-            }}
-
-            .game-card img {{
-                object-fit: contain;
-            }}
-
-            h1 {{
-                color: black;
-            }}
-        }}
-    </style>
-</head>
-<body>
-    <header>
-        <h1>{html.escape(archive_title)}</h1>
-        
-        {profile_image_html}
-        
-        <p class="summary">
-            Profile snapshot: {profile_snapshot}
-        </p>
-        <div class="profile-links">
-            <a href="{html.escape(GITHUB_URL, quote=True)}">GitHub</a>
-        </div>
-        
-    </header>
-        <div class="sticky-toolbar">
-            <p class="summary">
-                        <span id="visible-count">{len(entries)}</span> games ·
-                        {completed_count} completed ·
-                        {incomplete_count} incomplete ·
-                        {completion_percentage:.1f}% completion
-                    </p>
-
-            <div class="controls">
-                <label>
-                    Search
-                    <input id="search" type="search" placeholder="Game title">
-                </label>
-
-                <label>
-                    Sort
-                    <select id="sort">
-                        <option value="date-desc">Newest first</option>
-                        <option value="date-asc">Oldest first</option>
-                        <option value="title-asc">Title A–Z</option>
-                        <option value="title-desc">Title Z–A</option>
-                    </select>
-                </label>
-
-                <label>
-                    Year
-                    <select id="year">
-                        <option value="all">All years</option>
-                        {year_options}
-                    </select>
-                </label>
-
-                <label>
-                    Status
-                    <select id="status">
-                        <option value="all">All games</option>
-                        <option value="completed">Completed</option>
-                        <option value="incomplete">Incomplete</option>
-                    </select>
-                </label>
-            </div>
-        </div>
-
-    <main>
-        <section id="gallery">
-            {''.join(cards)}
-        </section>
-        <p id="empty-state">No games match the selected filters.</p>
-    </main>
-
-    <dialog id="image-dialog">
-        <button class="close-dialog" type="button" aria-label="Close">×</button>
-        <img id="dialog-image" alt="">
-    </dialog>
-
-    <footer>
-        Generated from image filenames. No metadata file was harmed in the making of this archive.
-    </footer>
-
-    <script id="archive-data" type="application/json">{html.escape(json.dumps(archive_data, ensure_ascii=False))}</script>
-    <script>
-        const gallery = document.querySelector("#gallery");
-        const cards = [...document.querySelectorAll(".game-card")];
-        const searchInput = document.querySelector("#search");
-        const sortSelect = document.querySelector("#sort");
-        const yearSelect = document.querySelector("#year");
-        const statusSelect = document.querySelector("#status");
-        const visibleCount = document.querySelector("#visible-count");
-        const emptyState = document.querySelector("#empty-state");
-        const dialog = document.querySelector("#image-dialog");
-        const dialogImage = document.querySelector("#dialog-image");
-
-        function applyView() {{
-            const query = searchInput.value.trim().toLocaleLowerCase();
-            const selectedYear = yearSelect.value;
-            const selectedStatus = statusSelect.value;
-
-            let visibleCards = cards.filter((card) => {{
-                const titleMatches = card.dataset.title.includes(query);
-                const yearMatches =
-                    selectedYear === "all" ||
-                    card.dataset.year === selectedYear;
-                const statusMatches =
-                    selectedStatus === "all" ||
-                    card.dataset.status === selectedStatus;
-
-                return titleMatches && yearMatches && statusMatches;
-            }});
-
-            const [sortField, sortDirection] = sortSelect.value.split("-");
-
-            visibleCards.sort((left, right) => {{
-                const leftValue = left.dataset[sortField];
-                const rightValue = right.dataset[sortField];
-                const comparison = leftValue.localeCompare(rightValue);
-
-                return sortDirection === "asc"
-                    ? comparison
-                    : -comparison;
-            }});
-
-            for (const card of cards) {{
-                card.hidden = true;
-            }}
-
-            for (const card of visibleCards) {{
-                card.hidden = false;
-                gallery.appendChild(card);
-            }}
-
-            visibleCount.textContent = visibleCards.length;
-            emptyState.style.display =
-                visibleCards.length ? "none" : "block";
-        }}
-
-        for (const control of [searchInput, sortSelect, yearSelect, statusSelect]) {{
-            control.addEventListener("input", applyView);
-            control.addEventListener("change", applyView);
-        }}
-
-        document.querySelectorAll(".image-button").forEach((button) => {{
-            button.addEventListener("click", () => {{
-                const image = button.querySelector("img");
-                dialogImage.src = image.src;
-                dialogImage.alt = image.alt;
-                dialog.showModal();
-            }});
-        }});
-
-        document.querySelector(".close-dialog").addEventListener("click", () => dialog.close());
-
-        dialog.addEventListener("click", (event) => {{
-            if (event.target === dialog) {{
-                dialog.close();
-            }}
-        }});
-
-        applyView();
-    </script>
-</body>
-</html>
-"""
-
-    output_path.write_text(document, encoding="utf-8")
-
-
-def prepare_external_images(entries: list[GameEntry], output_dir: Path) -> Path:
-    images_output = output_dir / "images"
-    images_output.mkdir(parents=True, exist_ok=True)
-
-    for item in entries:
-        destination = images_output / item.output_image_name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if item.source_path.resolve() != destination.resolve():
-            shutil.copy2(item.source_path, destination)
-
-    return images_output
-
-
-def build_pdf(entries: list[GameEntry], output_path: Path, archive_title: str) -> None:
+def numeric(n: Any) -> int:
     try:
-        from PIL import Image, ImageOps
-        from reportlab.lib.pagesizes import A4, landscape
-        from reportlab.lib.utils import ImageReader
-        from reportlab.pdfgen.canvas import Canvas
-    except ImportError as exc:
-        raise RuntimeError(
-            "PDF support requires Pillow and ReportLab.\n"
-            "Install them with:\n"
-            "  python3 -m pip install pillow reportlab"
-        ) from exc
-
-    page_width, page_height = landscape(A4)
-    margin = 28
-    header_height = 44
-    gap = 18
-    slot_height = (page_height - header_height - (2 * margin) - gap) / 2
-    slot_width = page_width - (2 * margin)
-
-    canvas = Canvas(str(output_path), pagesize=(page_width, page_height))
-    canvas.setTitle(archive_title)
-
-    def draw_header(page_number: int) -> None:
-        canvas.setFont("Helvetica-Bold", 16)
-        canvas.drawString(margin, page_height - margin + 2, archive_title)
-        canvas.setFont("Helvetica", 9)
-        canvas.drawRightString(
-            page_width - margin,
-            page_height - margin + 2,
-            f"Page {page_number}",
-        )
-
-    page_number = 1
-    draw_header(page_number)
-
-    for index, item in enumerate(entries):
-        slot_index = index % 2
-        if slot_index == 0 and index != 0:
-            canvas.showPage()
-            page_number += 1
-            draw_header(page_number)
-
-        top = page_height - margin - header_height - slot_index * (slot_height + gap)
-        caption_height = 32
-        image_box_height = slot_height - caption_height
-
-        with Image.open(item.source_path) as original:
-            image = ImageOps.exif_transpose(original).convert("RGB")
-            image.thumbnail((int(slot_width), int(image_box_height)))
-
-            x = margin + (slot_width - image.width) / 2
-            y = top - image.height
-
-            canvas.drawImage(
-                ImageReader(image),
-                x,
-                y,
-                width=image.width,
-                height=image.height,
-                preserveAspectRatio=True,
-                mask="auto",
-            )
-
-        caption_y = top - image_box_height - 16
-        canvas.setFont("Helvetica-Bold", 11)
-        canvas.drawString(margin, caption_y, item.title)
-
-        canvas.setFont("Helvetica", 9)
-        canvas.drawRightString(
-            page_width - margin,
-            caption_y,
-            f"{item.display_date} · {item.status}",
-        )
-
-    canvas.save()
+        return int(n)
+    except (TypeError, ValueError):
+        return 0
 
 
-def write_rejected_log(rejected: Iterable[tuple[Path, str]], output_path: Path) -> None:
-    lines = [
-        f"{path.name}: {reason}"
-        for path, reason in rejected
+def safe_ratio(n: Any) -> float:
+    try:
+        x = float(n)
+        return x if x == x and abs(x) < 1_000_000 else 0.0
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def load_config() -> str:
+    # A separate gamertag is not required; the source URL has the current value.
+    return GAMERTAG
+
+
+def detect_image_type(path: Path) -> str | None:
+    """Identify bytes, not filename: Chrome often stores JPEG bytes as .png."""
+    try:
+        with path.open('rb') as handle:
+            signature = handle.read(16)
+    except OSError:
+        return None
+    if signature.startswith(b'\xff\xd8\xff'):
+        return '.jpg'
+    if signature.startswith(b'\x89PNG\r\n\x1a\n'):
+        return '.png'
+    if signature.startswith(b'RIFF') and signature[8:12] == b'WEBP':
+        return '.webp'
+    return None
+
+
+def find_collector(root: Path, specified: str | None) -> Path | None:
+    if specified:
+        path = Path(specified).expanduser().resolve()
+        if not path.is_dir():
+            raise ValueError(f'Collector folder does not exist: {path}')
+        return path
+    candidates = [
+        root / 'chrome_data_download' / 'ta-collector',
+        root / 'CHROME_DATA_DOWNLOAD' / 'ta-collector',
+        root / 'ta-collector',
+        root.parent / 'chrome_data_download' / 'ta-collector',
+        root.parent / 'CHROME_DATA_DOWNLOAD' / 'ta-collector',
+        root.parent / 'ta-collector',
+        Path.home() / 'Downloads' / 'chrome_data_download' / 'ta-collector',
+        Path.home() / 'Downloads' / 'CHROME_DATA_DOWNLOAD' / 'ta-collector',
+        Path.home() / 'Downloads' / 'ta-collector',
     ]
-    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    for candidate in candidates:
+        if (candidate / 'data' / 'games.json').is_file():
+            return candidate
+    return None
 
 
-def publish_to_cloudflare(site_dir: Path, project_name: str) -> None:
-    """Deploy the generated site with Cloudflare Wrangler."""
-    if shutil.which("npx") is None:
-        raise RuntimeError(
-            "Publishing requires Node.js/npm (the `npx` command was not found).\n"
-            "On macOS, install it with: brew install node"
-        )
+def load_source(root: Path, collector: Path | None) -> tuple[dict[str, Any], Path, Path | None]:
+    if collector:
+        path = collector / 'data' / 'games.json'
+        if not path.is_file():
+            raise FileNotFoundError(f'Expected collector database: {path}')
+        image_dir = collector / 'images'
+    else:
+        path = root / 'data' / 'games.json'
+        if not path.is_file():
+            raise FileNotFoundError('No games.json found. Place chrome_data_download/ta-collector next to this script, or pass --collector-dir.')
+        image_dir = None
+    data = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(data, dict) or not isinstance(data.get('games'), list):
+        raise ValueError(f'Expected a TrueAchievements collector JSON with a games list: {path}')
+    return data, path, image_dir
 
-    command = [
-        "npx",
-        "--yes",
-        "wrangler",
-        "pages",
-        "deploy",
-        str(site_dir),
-        "--project-name",
-        project_name,
-    ]
-    print(f"Publishing to Cloudflare Pages project: {project_name}")
-    subprocess.run(command, check=True)
+
+def game_image_path(image_dir: Path | None, game_id: int) -> Path | None:
+    if image_dir is None:
+        return None
+    # Deliberately derive the name from the game ID, not untrusted JSON paths.
+    for extension in VALID_IMAGE_EXTENSIONS:
+        path = image_dir / f'{game_id}{extension}'
+        if path.is_file() and detect_image_type(path):
+            return path
+    return None
+
+
+def game_entry(item: dict[str, Any], image_dir: Path | None, output_dir: Path,
+               *, should_copy: bool) -> tuple[dict[str, Any], bool]:
+    game_id = numeric(item.get('id'))
+    if game_id <= 0:
+        raise ValueError(f'Invalid game ID: {item.get("id")!r}')
+    source_img = game_image_path(image_dir, game_id)
+    image_link: str | None = None
+    if source_img is not None:
+        ext = detect_image_type(source_img)
+        assert ext is not None
+        image_link = f'images/{game_id}{ext}'
+        if should_copy:
+            dest = output_dir / image_link
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_img, dest)
+    achievements = item.get('achievements') if isinstance(item.get('achievements'), dict) else {}
+    gamerscore = item.get('gamerscore') if isinstance(item.get('gamerscore'), dict) else {}
+    ta_score = item.get('ta_score') if isinstance(item.get('ta_score'), dict) else {}
+    raw_complete = item.get('ta_achievements_complete')
+    completion_status = 'completed' if raw_complete is True else 'incomplete' if raw_complete is False else 'unverified'
+    earned = numeric(achievements.get('earned'))
+    total = numeric(achievements.get('total'))
+    percent = round(earned / total * 100, 1) if total else 0
+    url = str(item.get('url') or '')
+    if not url.startswith('https://www.trueachievements.com/'):
+        url = f'https://www.trueachievements.com/gamer/ForensicFlubber/games'
+    return ({
+        'id': game_id,
+        'title': str(item.get('title') or f'Game {game_id}'),
+        'completion_status': completion_status,
+        'ta_achievements_complete': raw_complete if isinstance(raw_complete, bool) else None,
+        'completion_percentage': percent,
+        'achievements': {'earned': earned, 'total': total},
+        'gamerscore': {'earned': numeric(gamerscore.get('earned')), 'total': numeric(gamerscore.get('total'))},
+        'ta_score': {'earned': numeric(ta_score.get('earned')), 'total': numeric(ta_score.get('total'))},
+        'ta_ratio': safe_ratio(item.get('ta_ratio')),
+        'image_src': image_link,
+        'image_download_status': str(item.get('image_download_status') or 'not_attempted'),
+        'url': url,
+    }, source_img is not None)
+
+
+def status_text(game: dict[str, Any]) -> str:
+    return {'completed': '100% complete', 'incomplete': 'In progress', 'unverified': 'Unverified'}[game['completion_status']]
+
+
+def card_html(game: dict[str, Any]) -> str:
+    title = esc(game['title'])
+    game_id = game['id']
+    status = game['completion_status']
+    is_completed = status == 'completed'
+    if game['image_src']:
+        image_html = f'<img src="{esc(game["image_src"])}" alt="TrueAchievements summary for {title}" loading="lazy" decoding="async">'
+    else:
+        image_html = f'<span class="placeholder" aria-label="Image pending">{ICON}<span>Image pending</span></span>'
+    p = game['completion_percentage']
+    gs = game['gamerscore']['earned']
+    ta = game['ta_score']['earned']
+    a = game['achievements']
+    return f'''<button type="button" class="game-card" data-game-id="{game_id}" data-open-id="{game_id}"
+    data-game-title="{title}" data-completion-status="{status}" data-ta-achievements-complete="{str(game['ta_achievements_complete']).lower()}"
+    data-completion-source="trueachievements" data-image-available="{str(bool(game['image_src'])).lower()}"
+    aria-label="View details for {title}">
+      <span class="card-visual">{image_html}<span class="card-status{' in-progress' if not is_completed else ''}">{esc(status_text(game))}</span></span>
+      <span class="game-body">
+        <span class="game-title">{title}</span>
+        <span class="game-row"><span class="ach-count">{integer(a['earned'])} / {integer(a['total'])} achievements</span><span class="percent">{p:g}%</span></span>
+        <span class="mini-progress" aria-hidden="true"><span style="width:{min(100,max(0,p)):g}%"></span></span>
+        <span class="game-footer"><span class="footer-item">GS <strong>{integer(gs)}</strong></span><span class="footer-item">TA <strong>{integer(ta)}</strong></span></span>
+      </span>
+    </button>'''
+
+
+def row_html(game: dict[str, Any]) -> str:
+    title = esc(game['title'])
+    status = game['completion_status']
+    a, gs, ta = game['achievements'], game['gamerscore'], game['ta_score']
+    tag = f'<span class="table-tag {"complete" if status == "completed" else ""}">{esc(status_text(game))}</span>'
+    return (f'<tr data-game-id="{game["id"]}" data-completion-status="{status}" data-ta-achievements-complete="{str(game["ta_achievements_complete"]).lower()}" data-completion-source="trueachievements">'
+        f'<td><button class="table-name" type="button" data-open-id="{game["id"]}">{title}</button></td>'
+        f'<td>{tag}</td><td class="table-percent">{game["completion_percentage"]:g}%</td>'
+        f'<td>{integer(a["earned"])} / {integer(a["total"])}</td>'
+        f'<td>{integer(gs["earned"])}</td><td>{integer(ta["earned"])}</td><td>{game["ta_ratio"]:.3f}×</td>'
+        f'<td>{"Yes" if game["image_src"] else "—"}</td></tr>')
+
+
+def stat_html(label: str, value: str, sub: str) -> str:
+    return (f'<article class="stat"><div class="stat-top"><span class="stat-label">{esc(label)}</span></div>'
+            f'<strong class="stat-value">{esc(value)}</strong><span class="stat-sub">{esc(sub)}</span></article>')
+
+
+def timestamp_label(value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        return 'unknown'
+    try:
+        dt = datetime.fromisoformat(value.replace('Z','+00:00')).astimezone(timezone.utc)
+        return dt.strftime('%d %b %Y, %H:%M UTC')
+    except ValueError:
+        return 'unknown'
+
+
+def build_html(data: dict[str, Any], games: list[dict[str, Any]], missing_count: int) -> str:
+    gamertag = load_config()
+    count = len(games)
+    total_complete = sum(g['completion_status'] == 'completed' for g in games)
+    total_incomplete = sum(g['completion_status'] == 'incomplete' for g in games)
+    total_unknown = count - total_complete - total_incomplete
+    total_images = sum(bool(g['image_src']) for g in games)
+    total_ach = sum(g['achievements']['earned'] for g in games)
+    total_ach_possible = sum(g['achievements']['total'] for g in games)
+    total_gs = sum(g['gamerscore']['earned'] for g in games)
+    total_gs_possible = sum(g['gamerscore']['total'] for g in games)
+    total_ta = sum(g['ta_score']['earned'] for g in games)
+    total_ta_possible = sum(g['ta_score']['total'] for g in games)
+    percentage = 100.0 * total_complete / count if count else 0
+    achievements_pct = 100.0 * total_ach / total_ach_possible if total_ach_possible else 0
+    update = timestamp_label(data.get('exported_at'))
+    stats = ''.join([
+        stat_html('Total games', integer(count), f'{integer(total_incomplete)} in progress' + (f' · {integer(total_unknown)} unverified' if total_unknown else '')),
+        stat_html('TrueAchievements', integer(total_ta), f'of {integer(total_ta_possible)} possible TA'),
+        stat_html('Gamerscore', integer(total_gs), f'of {integer(total_gs_possible)} GS'),
+        stat_html('Achievements earned', integer(total_ach), f'of {integer(total_ach_possible)} achievements'),
+        stat_html('Games 100%', integer(total_complete), f'{percentage:.1f}% of tracked games'),
+        stat_html('Achievement completion', f'{achievements_pct:.1f}%', 'Weighted across all achievements'),
+    ])
+    json_payload = json.dumps({'games': games}, ensure_ascii=False, separators=(',', ':'))
+    # Safe in a script tag even for game titles containing markup or ampersands.
+    json_payload = json_payload.replace('&', '\\u0026').replace('<', '\\u003c').replace('>', '\\u003e').replace('\u2028','\\u2028').replace('\u2029','\\u2029')
+    game_cards = '\n'.join(card_html(g) for g in games)
+    rows = '\n'.join(row_html(g) for g in games)
+    archive_note = 'Completion status reflects TA achievement progress (not the retired historical archive).'
+    source_url = 'https://www.trueachievements.com/gamer/ForensicFlubber'
+    return f'''<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#06172e">
+<meta name="description" content="{esc(gamertag)}'s Xbox achievements, TrueAchievements score, Gamerscore and game completion gallery.">
+<title>{esc(gamertag)} — Achievement Archive</title>
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="stylesheet" href="assets/style.css">
+</head><body>
+<header class="site-header"><nav class="container nav" aria-label="Main navigation">
+  <a class="brand" href="#top" aria-label="Achievement Archive home"><span class="brand-mark">{ICON}</span><span><span class="brand-name">{esc(gamertag.upper())}</span><span class="brand-subtitle">ACHIEVEMENT ARCHIVE</span></span></a>
+  <div class="nav-links"><a class="nav-link" href="{esc(source_url)}" target="_blank" rel="noopener noreferrer">{ICON}<span>TrueAchievements</span></a><a class="nav-link" href="{esc(GITHUB_URL)}" target="_blank" rel="noopener noreferrer">&lt;/&gt;<span>GitHub</span></a></div>
+</nav></header>
+<main id="top" class="container">
+<section class="hero" aria-labelledby="page-title">
+  <p class="eyebrow">Personal game collection</p><h1 id="page-title">Achievement Archive.</h1>
+  <p class="hero-copy">A personal library of Xbox games, achievement progress and the numbers behind every unlock.</p>
+  <div class="hero-bottom"><span class="hero-pill">{ICON}<strong>{integer(count)} games tracked</strong></span><span class="hero-pill" aria-label="Achievement images archived"><strong>{integer(total_images)} / {integer(count)} images archived</strong></span><span class="hero-update">Last synchronized: {esc(update)}</span></div>
+</section>
+<section class="stats" aria-label="Your achievement statistics">{stats}</section>
+<section class="library" aria-labelledby="library-title"><div class="section-heading">
+  <div><h2 class="section-title" id="library-title">Game Library</h2><p class="section-description">Explore achievements, scores and the game summaries you've collected.</p></div>
+  <div class="view-switch" role="group" aria-label="Choose library layout"><button class="view-btn is-active" aria-pressed="true" type="button" data-view="gallery">{GRID_ICON} Gallery</button><button class="view-btn" aria-pressed="false" type="button" data-view="table">{LIST_ICON} Table</button></div>
+</div>
+<div class="filters" role="group" aria-label="Filter and sort games">
+  <label class="field"><span class="field-label">SEARCH GAMES</span><span class="input-wrap">{SEARCH_ICON}<input id="search" type="search" placeholder="Search by title..." autocomplete="off"></span></label>
+  <label class="field"><span class="field-label">ACHIEVEMENT STATUS</span><span class="select-wrap"><select id="status"><option value="all">All games</option><option value="completed">100% complete</option><option value="incomplete">In progress</option><option value="unverified">Unverified</option></select></span></label>
+  <label class="field"><span class="field-label">IMAGE AVAILABILITY</span><span class="select-wrap"><select id="images-filter"><option value="all">All images</option><option value="available">Downloaded only</option><option value="missing">Missing images</option></select></span></label>
+  <label class="field"><span class="field-label">SORT BY</span><span class="select-wrap"><select id="sort"><option value="ta-desc">TA score (highest)</option><option value="gs-desc">Gamerscore (highest)</option><option value="ach-desc">Achievements earned</option><option value="completion-desc">Completion (highest)</option><option value="completion-asc">Completion (lowest)</option><option value="ratio-desc">TA ratio (highest)</option><option value="title-asc">Title A–Z</option><option value="title-desc">Title Z–A</option></select></span></label>
+</div>
+<div class="library-meta"><span class="results-line"><strong id="result-count">{integer(count)}</strong> games shown</span><button class="clear-btn" type="button" id="clear-filters" hidden>Clear filters</button></div>
+<div class="gallery" id="gallery" aria-label="Game gallery">{game_cards}</div>
+<div class="table-wrap" id="table-view" hidden><table class="game-table"><thead><tr><th scope="col">Game</th><th scope="col">Status</th><th scope="col">Progress</th><th scope="col">Achievements</th><th scope="col">Gamerscore</th><th scope="col">TA score</th><th scope="col">TA ratio</th><th scope="col">Image</th></tr></thead><tbody id="table-body">{rows}</tbody></table></div>
+<div class="empty" id="empty-state" hidden><strong>No games found</strong>Try changing the search or filters.</div>
+</section></main>
+<footer class="site-footer"><div class="container"><span>{esc(archive_note)}</span><span>Source: <a href="{esc(source_url)}" target="_blank" rel="noopener noreferrer">TrueAchievements</a> · Updated {esc(update)}</span></div></footer>
+<dialog id="detail-dialog" class="detail-dialog" aria-labelledby="detail-title"><div class="dialog-inner">
+  <div class="dialog-head"><div><p class="dialog-status" id="detail-status"></p><h2 class="dialog-title" id="detail-title"></h2></div><button type="button" class="dialog-close" id="detail-close" aria-label="Close details">×</button></div>
+  <div class="dialog-image" id="detail-image"></div><div class="dialog-details" id="detail-metrics"></div>
+  <div class="dialog-actions"><span class="dialog-note" id="detail-note"></span><a class="external-btn" id="detail-link" href="{esc(source_url)}" target="_blank" rel="noopener noreferrer">View on TrueAchievements ↗</a></div>
+</div></dialog>
+<script type="application/json" id="archive-data">{json_payload}</script>
+<script src="assets/app.js" defer></script>
+</body></html>'''
+
+
+def make_site(args: argparse.Namespace) -> tuple[Path, dict[str, int]]:
+    collector = find_collector(ROOT, args.collector_dir)
+    data, source, img_dir = load_source(ROOT, collector)
+    print(f'Reading games from {source}')
+    if img_dir:
+        print(f'Reading images from {img_dir}')
+    else:
+        print('No local image folder found: preview will display image placeholders.')
+    dest = Path(args.output_dir).expanduser().resolve() if args.output_dir else ROOT / 'site'
+    # Safety: do not accidentally delete the source directory or the collector.
+    if dest == ROOT or dest == collector or dest == img_dir or (dest in ROOT.parents):
+        raise ValueError(f'Unsafe output directory: {dest}')
+    if dest.exists():
+        shutil.rmtree(dest)
+    (dest / 'assets').mkdir(parents=True, exist_ok=True)
+    (dest / 'data').mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ASSETS / 'style.css', dest / 'assets' / 'style.css')
+    shutil.copy2(ASSETS / 'app.js', dest / 'assets' / 'app.js')
+    records, seen = [], set()
+    expected = 0
+    missing_expected: list[dict[str,Any]] = []
+    for item in data['games']:
+        if not isinstance(item, dict):
+            raise ValueError('Every game record must be a JSON object')
+        game, found = game_entry(item, img_dir, dest, should_copy=True)
+        if game['id'] in seen:
+            raise ValueError(f'Duplicate game ID: {game["id"]}')
+        seen.add(game['id'])
+        records.append(game)
+        if game['image_download_status'] == 'downloaded':
+            expected += 1
+            if not found:
+                missing_expected.append(game)
+    records.sort(key=lambda g: (-g['ta_score']['earned'],g['title'].casefold()))
+    (dest / 'index.html').write_text(build_html(data, records, len(missing_expected)),encoding='utf-8')
+    (dest / 'data' / 'games.json').write_text(json.dumps({'source':data.get('source'),'exported_at':data.get('exported_at'),'completion_source':'ta_achievements_complete','games':records},indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
+    favicon = ROOT / 'favicon.png'
+    if favicon.is_file():
+        shutil.copy2(favicon, dest / 'favicon.png')
+    else:
+        print(f'WARNING: favicon.png not found at {favicon}; no favicon was copied.', file=sys.stderr)
+    totals = {'games':len(records),'images':sum(bool(g['image_src']) for g in records),'expected_images':expected,'missing_expected_images':len(missing_expected),'complete':sum(g['completion_status']=='completed' for g in records)}
+    print(f'Created {dest / "index.html"} ({totals["games"]} games; {totals["complete"]} TA-complete; {totals["images"]} actual images)')
+    if missing_expected:
+        print(f'WARNING: {len(missing_expected)} game(s) marked downloaded in JSON lack local image files.',file=sys.stderr)
+        for g in missing_expected[:8]:
+            print(f'  - {g["id"]}: {g["title"]}',file=sys.stderr)
+        if len(missing_expected)>8:
+            print(f'  (+ {len(missing_expected)-8} more)',file=sys.stderr)
+    return dest, totals
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Build a static gaming-achievement archive."
-    )
-    parser.add_argument(
-        "--publish",
-        action="store_true",
-        help="publish the generated site to Cloudflare Pages with Wrangler",
-    )
-    parser.add_argument(
-        "--project-name",
-        default=CLOUDFLARE_PROJECT_NAME,
-        help=f"Cloudflare Pages project name (default: {CLOUDFLARE_PROJECT_NAME})",
-    )
+    parser=argparse.ArgumentParser(description='Build the Arctic + Pistachio Xbox Achievement Archive')
+    parser.add_argument('--collector-dir',help='Path to ta-collector (containing data/games.json and images/)')
+    parser.add_argument('--output-dir',help='Output directory (default: site/)')
+    parser.add_argument('--publish',action='store_true',help='Deploy generated site to Cloudflare Pages with Wrangler (requires Node/npm)')
+    parser.add_argument('--allow-missing-images',action='store_true',help='Permit publishing even if downloaded image records do not have matching local files')
+    parser.add_argument('--project-name',default=CLOUDFLARE_PROJECT_NAME,help='Cloudflare Pages project name')
     return parser.parse_args()
-
-def find_profile_image(script_dir: Path) -> Path | None:
-    profile_dir = script_dir / "profilepic"
-
-    if not profile_dir.exists():
-        return None
-
-    profile_images = [
-        path
-        for path in profile_dir.iterdir()
-        if path.is_file()
-        and path.suffix.lower() in SUPPORTED_EXTENSIONS
-    ]
-
-    if not profile_images:
-        return None
-
-    return sorted(profile_images)[0]
 
 
 def main() -> int:
-    args = parse_args()
-    script_dir = Path(__file__).resolve().parent
-    completions_dir = script_dir / "completions"
-    incomplete_dir = script_dir / "incomplete"
-    profile_image_path = find_profile_image(script_dir)
-
-    if profile_image_path is None:
-        print(
-            "No profile image found.\n"
-            "Put a profile image inside the profilepic/ folder.",
-            file=sys.stderr,
-        )
+    args=parse_args()
+    try:
+        output,totals=make_site(args)
+        if args.publish:
+            if totals['missing_expected_images'] and not args.allow_missing_images:
+                print('Not publishing: some recorded downloaded images are absent. Supply the complete chrome_data_download/ta-collector folder or use --allow-missing-images.',file=sys.stderr)
+                return 2
+            if not shutil.which('npx'):
+                print('Publishing needs Node.js/npm (npx not found). Install Node.js first.',file=sys.stderr)
+                return 2
+            command=['npx','--yes','wrangler','pages','deploy',str(output),'--project-name',args.project_name]
+            print(f'Publishing to Cloudflare Pages project {args.project_name} ...')
+            subprocess.run(command,check=True)
+        return 0
+    except (OSError,ValueError,json.JSONDecodeError,subprocess.CalledProcessError) as exc:
+        print(f'ERROR: {exc}',file=sys.stderr)
         return 1
 
-    gamertag = profile_image_path.stem
-    archive_title = f"{gamertag}'s Achievements Archive"
 
-    entries, rejected = discover_entries(completions_dir, incomplete_dir)
-
-    if not entries:
-        print(
-            "No valid images found.\n\n"
-            "Put images in these folders:\n"
-            f"  {completions_dir}\n"
-            f"  {incomplete_dir}\n\n"
-            "Use filenames such as:\n"
-            "  2017-02-09__Murdered Soul Suspect.jpg\n"
-            "  2021-10-20__Halo Infinite.png",
-            file=sys.stderr,
-        )
-        return 1
-
-    site_dir = script_dir / "site"
-    if site_dir.exists():
-        shutil.rmtree(site_dir)
-    site_dir.mkdir(parents=True)
-    
-    favicon_path = script_dir / "favicon.png"
-
-    if favicon_path.exists():
-        shutil.copy2(favicon_path, site_dir / "favicon.png")
-
-    copied_images_dir = prepare_external_images(entries, site_dir)
-    html_path = site_dir / "index.html"
-    build_html(
-        entries,
-        html_path,
-        archive_title=archive_title,
-        gamertag=gamertag,
-        embed_images=False,
-        copied_images_dir=copied_images_dir,
-        profile_image_path=profile_image_path,
-    )
-
-    print(f"Created website: {html_path}")
-    print(f"Copied {len(entries)} game image(s) into: {copied_images_dir}")
-
-    if rejected:
-        rejected_path = script_dir / "rejected_files.txt"
-        write_rejected_log(rejected, rejected_path)
-        print(
-            f"Skipped {len(rejected)} incorrectly named image(s). "
-            f"Details: {rejected_path}"
-        )
-
-    if args.publish:
-        try:
-            publish_to_cloudflare(site_dir, args.project_name)
-        except (RuntimeError, subprocess.CalledProcessError) as exc:
-            print(f"Publish failed: {exc}", file=sys.stderr)
-            return 2
-
-    return 0
-
-
-if __name__ == "__main__":
+if __name__=='__main__':
     raise SystemExit(main())

@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "TA Show-All Collector",
+  "version": "3.4.0",
+  "description": "Read games.json, download missing/new/incomplete/newly completed images at 10-second intervals, export JSON.",
+  "permissions": ["activeTab", "scripting", "downloads", "storage"],
+  "host_permissions": ["https://img.trueachievements.com/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_popup": "popup.html"}
+}
