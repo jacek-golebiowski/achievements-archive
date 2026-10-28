@@ -105,7 +105,7 @@ async function exportSnapshot(folder,reason) {
 async function progress(message,running=true,extra={}) {
   await chrome.storage.local.set({ta_progress:{message,running,updated_at:new Date().toISOString(),...extra}});
 }
-async function startJob(tabId,mode,folder,referenceGames) {
+async function startJob(tabId,folder,referenceGames) {
   active=true;stopped=false;
   let savedAtLeastOnce=false;
   try {
@@ -115,26 +115,28 @@ async function startJob(tabId,mode,folder,referenceGames) {
     const scraped=executed?.[0]?.result?.games;
     if(!scraped?.length)throw Error('No games found. Open your games list and click Show All.');
     if(scraped.length<150)throw Error(`Only ${scraped.length} visible rows. Click Show All before syncing.`);
-    const {games,knownIds}=mergeScrapedGames(reference,scraped);
+    const {games}=mergeScrapedGames(reference,scraped);
     const visibleIds=new Set(scraped.map(g=>gameId(g.id)));
     const liveGames=games.filter(g=>visibleIds.has(gameId(g.id)));
-    const candidates=liveGames.filter(g=>shouldDownload(mode,g,knownIds.has(gameId(g.id))));
+    const candidates=liveGames.filter(shouldDownload);
     const initiallySkipped=liveGames.length-candidates.length;
     let attempted=0,ok=0,failed=0,consecutiveServerFailures=0,circuitBroken=false;
     async function persist(){
       await chrome.storage.local.set({ta_games:games,ta_failures:unresolvedFailures(games)});
     }
     await persist();savedAtLeastOnce=true;
-    await progress(`${liveGames.length} visible games. ${candidates.length} selected for ${mode}; ${initiallySkipped} skipped.`,true,
-      {count:liveGames.length,candidates:candidates.length,attempted,successful:ok,failed,skipped:initiallySkipped,mode});
+    await progress(`${liveGames.length} visible games. ${candidates.length} queued for Update; ${initiallySkipped} skipped.`,true,
+      {count:liveGames.length,candidates:candidates.length,attempted,successful:ok,failed,skipped:initiallySkipped});
     for(let i=0;i<candidates.length;i++) {
       if(stopped)break;
       const game=candidates[i];
       const earlierImage=hasImage(game);
       attempted++;
       await progress(`Image ${i+1}/${candidates.length} • successful ${ok} • failed ${failed} • skipped ${initiallySkipped}\n${game.title}`,true,
-        {count:liveGames.length,candidates:candidates.length,attempted,successful:ok,failed,skipped:initiallySkipped,mode});
-      const result=await downloadOne(game.image_url,`${folder}/images/${game.id}.png`);
+        {count:liveGames.length,candidates:candidates.length,attempted,successful:ok,failed,skipped:initiallySkipped});
+      const freshUrl=new URL(game.image_url);
+      freshUrl.searchParams.set('v',String(Date.now()));
+      const result=await downloadOne(freshUrl.href,`${folder}/images/${game.id}.png`);
       if(result.ok) {
         ok++;consecutiveServerFailures=0;
         game.image_file=`images/${game.id}.png`;
@@ -144,7 +146,10 @@ async function startJob(tabId,mode,folder,referenceGames) {
         game.image_mime=result.mime;game.image_bytes=result.bytes;
         game.image_download_id=result.download_id;
         game.image_last_downloaded_at=new Date().toISOString();
-        game.image_refresh_pending=false;
+        game.image_achievements_earned=game.achievements?.earned ?? null;
+        game.image_achievements_total=game.achievements?.total ?? null;
+        game.image_update_pending=false;
+        delete game.image_refresh_pending;
         delete game.image_completion_refresh_pending;
       } else {
         failed++;
@@ -156,7 +161,7 @@ async function startJob(tabId,mode,folder,referenceGames) {
           game.image_error=result.error;
           game.image_last_error_at=new Date().toISOString();
         }
-        game.image_refresh_pending=true;
+        game.image_update_pending=true;
         if(earlierImage) {
           game.image_error=result.error;
           game.image_last_error_at=new Date().toISOString();
@@ -168,12 +173,12 @@ async function startJob(tabId,mode,folder,referenceGames) {
     }
     const reason=circuitBroken?'server_failed_pause':stopped?'stopped':'completed';
     await progress('Exporting games.json and ta_failures.json…',true,
-      {count:liveGames.length,candidates:candidates.length,attempted,successful:ok,failed,skipped:initiallySkipped,mode});
+      {count:liveGames.length,candidates:candidates.length,attempted,successful:ok,failed,skipped:initiallySkipped});
     const out=await exportSnapshot(folder,reason);
     await progress(`Done: attempted ${attempted}, downloaded ${ok}, failed ${failed}, skipped ${initiallySkipped}.`+
       (circuitBroken?'\nPaused after 5 consecutive SERVER_FAILED errors.':'')+
       `\nJSON export: ${out.ok?'OK':'FAILED (use manual export)'}.`,false,
-      {count:liveGames.length,candidates:candidates.length,attempted,successful:ok,failed,skipped:initiallySkipped,mode,exported:out.ok,circuitBroken});
+      {count:liveGames.length,candidates:candidates.length,attempted,successful:ok,failed,skipped:initiallySkipped,exported:out.ok,circuitBroken});
   } catch(e) {
     let msg='Error: '+String(e?.message||e);
     if(savedAtLeastOnce) {
@@ -213,7 +218,6 @@ async function syncTrophyCase(tabId,folder,referenceGames) {
 chrome.runtime.onMessage.addListener((msg,sender,reply)=>{
   if(msg.type==='START') {
     if(active){reply({ok:false,error:'A run is already active.'});return;}
-    if(!VALID_MODES.has(msg.mode)){reply({ok:false,error:'Choose Missing Images or Update.'});return;}
     const folder=String(msg.folder||'ta-collector').trim();
     if(!/^[\w .-]+$/.test(folder)||folder==='.'||folder==='..'){
       reply({ok:false,error:'Folder must be a single simple subfolder name.'});return;
@@ -224,7 +228,7 @@ chrome.runtime.onMessage.addListener((msg,sender,reply)=>{
     try{readGamesJson({games:msg.games,gamer_id:GAMER_ID});}
     catch(e){reply({ok:false,error:String(e.message||e)});return;}
     reply({ok:true});
-    startJob(msg.tabId,msg.mode,folder,msg.games);
+    startJob(msg.tabId,folder,msg.games);
   } else if(msg.type==='TROPHY_SYNC') {
     if(active){reply({ok:false,error:'A run is already active.'});return;}
     const folder=String(msg.folder||'ta-collector').trim();

@@ -188,7 +188,7 @@ def card_html(game: dict[str, Any]) -> str:
     gs = game['gamerscore']['earned']
     ta = game['ta_score']['earned']
     a = game['achievements']
-    ratio = f"{game['ta_ratio']:.2f}×"
+    ratio = f"{game['ta_ratio']:.4f}×"
     if game['image_src']:
         image_html = f'<img src="{esc(game["image_src"])}" alt="TrueAchievements summary for {title}" loading="lazy" decoding="async">'
         body_html = f'<span class="game-body compact-body"><span class="game-title">{title}</span><span class="card-ratio" title="Earned TA ratio">{ratio}</span></span>'
@@ -216,7 +216,7 @@ def row_html(game: dict[str, Any]) -> str:
         f'<td><button class="table-name" type="button" data-open-id="{game["id"]}">{title}</button></td>'
         f'<td>{tag}</td><td class="table-percent">{game["completion_percentage"]:g}%</td>'
         f'<td>{integer(a["earned"])} / {integer(a["total"])}</td>'
-        f'<td>{integer(gs["earned"])}</td><td>{integer(ta["earned"])}</td><td>{game["ta_ratio"]:.3f}×</td>'
+        f'<td>{integer(gs["earned"])}</td><td>{integer(ta["earned"])}</td><td>{game["ta_ratio"]:.4f}×</td>'
         f'<td>{"Yes" if game["image_src"] else "—"}</td></tr>')
 
 
@@ -279,7 +279,7 @@ def build_html(data: dict[str, Any], games: list[dict[str, Any]], missing_count:
     stats = ''.join([
         stat_html('Total games', integer(count), ''),
         stat_html('Games 100%', integer(total_complete), ''),
-        stat_html('TA ratio', f'{overall_ratio:.2f}×', ''),
+        stat_html('TA ratio', f'{overall_ratio:.4f}×', ''),
         stat_html('TA score', integer(total_ta), ''),
         stat_html('Gamerscore', integer(total_gs), ''),
         stat_html('Achievements', integer(total_ach), ''),

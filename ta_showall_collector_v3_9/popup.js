@@ -7,7 +7,6 @@ const startEl=document.getElementById('start');
 const stopEl=document.getElementById('stop');
 const exportEl=document.getElementById('export');
 const folderEl=document.getElementById('folder');
-const modeEl=document.getElementById('mode');
 const trophyEl=document.getElementById('trophy');
 let sourceValid=false;
 function inputReady(){return freshEl.checked||sourceValid;}
@@ -25,7 +24,8 @@ async function refresh() {
   trophyEl.disabled=!!p.running||!sourceValid;
   stopEl.disabled=!p.running;
   exportEl.disabled=!!p.running||!stats.total;
-  countsEl.textContent=`Saved: ${stats.total} games · ${stats.downloaded} images · ${stats.failed} failed · ${stats.not_attempted} pending`+
+  const queued=(saved.ta_games||[]).filter(g=>g.image_update_pending===true || !hasImage(g)).length;
+  countsEl.textContent=`Saved: ${stats.total} games · ${stats.downloaded} images · ${stats.failed} failed · ${queued} queued`+
     (saved.ta_last_export?`\nExport: ${saved.ta_last_export.ok?'OK':'FAILED'} · ${new Date(saved.ta_last_export.at).toLocaleString()}`:'');
 }
 async function readSelectedFile() {
@@ -65,8 +65,8 @@ startEl.addEventListener('click',async()=>{
     if(!tab?.id || !/^https:\/\/www\.trueachievements\.com\/gamer\/ForensicFlubber\/games(?:[?#]|$)/i.test(tab.url||''))
       throw Error('Open your ForensicFlubber games page and click Show All first.');
     const folder=folderEl.value.trim();
-    await chrome.storage.local.set({ta_options:{mode:modeEl.value,folder}});
-    const response=await message('START',{tabId:tab.id,mode:modeEl.value,folder,games,fresh});
+    await chrome.storage.local.set({ta_options:{folder}});
+    const response=await message('START',{tabId:tab.id,folder,games,fresh});
     if(!response?.ok)throw Error(response?.error||'Unable to start.');
     fileEl.value='';sourceValid=false;freshEl.checked=false;
     infoEl.textContent='Next run: select the newest exported games.json.';
@@ -106,6 +106,6 @@ chrome.storage.onChanged.addListener((changes,area)=>{
 });
 (async()=>{
   const x=await chrome.storage.local.get('ta_options');
-  if(x.ta_options){modeEl.value=VALID_MODES.has(x.ta_options.mode)?x.ta_options.mode:'update';folderEl.value=x.ta_options.folder||'ta-collector';}
+  if(x.ta_options){folderEl.value=x.ta_options.folder||'ta-collector';}
   await refresh();
 })();

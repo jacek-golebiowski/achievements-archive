@@ -18,18 +18,16 @@ button.secondary{background:#29445d;color:#e5f2fa}button:disabled{opacity:.45;cu
 #fileInfo{font-size:11px;color:#aac4d5;margin:4px 0 0;line-height:1.3;max-height:32px;overflow:hidden}
 #trophy{grid-column:1/3}
 </style></head><body>
-<h1>TA Collector v3.7</h1>
+<h1>TA Collector v3.9</h1>
 <div id="counts">Last saved database: loading…</div>
 <label for="database">games.json reference</label>
 <input type="file" id="database" accept=".json,application/json">
 <div id="fileInfo">Choose your latest games.json.</div>
 <label class="fresh"><input type="checkbox" id="fresh"> Fresh start (no existing games.json)</label>
-<label for="mode">Download mode</label>
-<select id="mode"><option value="update">Update — new/changed achievements</option><option value="missing">Missing images only</option></select>
 <label for="folder">Download folder</label>
 <input id="folder" value="ta-collector" spellcheck="false">
 <div class="actions">
- <button id="start" disabled>Start sync</button>
+ <button id="start" disabled>Start Update</button>
  <button id="stop" class="secondary" disabled>Stop</button>
  <button id="export" class="secondary">Export JSON</button>
  <button id="trophy" class="secondary" disabled>Sync Trophy Case (on Trophy Case page)</button>

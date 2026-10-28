@@ -145,7 +145,7 @@
       metric('Gamerscore',`${integer.format(score(game,'gamerscore','earned'))} / ${integer.format(score(game,'gamerscore','total'))}`),
       metric('Achievements',`${integer.format(score(game,'achievements','earned'))} / ${integer.format(score(game,'achievements','total'))}`),
       metric('Completion',pct(game.completion_percentage)),
-      metric('TA ratio', ratio(game).toFixed(3) + '×'),
+      metric('TA ratio', ratio(game).toFixed(4) + '×'),
     );
     detailLink.href = game.url;
     detailNote.textContent = game.image_src ? 'Image stored locally in this archive.' : 'Image pending; statistics remain available.';

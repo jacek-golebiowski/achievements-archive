@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TA Show-All Collector",
-  "version": "3.7.0",
-  "description": "Sync game achievements and images; independently capture ordered Trophy Case from the open page.",
+  "version": "3.9.0",
+  "description": "Single Update queue with versioned image requests and separate Trophy Case sync.",
   "permissions": [
     "activeTab",
     "scripting",
