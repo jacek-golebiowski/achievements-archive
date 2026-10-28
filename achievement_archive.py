@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and optionally publish the Arctic / Pistachio TrueAchievements archive.
+"""Build and publish the Arctic / Pistachio TrueAchievements archive.
 
 Input: chrome_data_download/ta-collector/data/games.json and
        chrome_data_download/ta-collector/images/<game-id>.png (JPEG inside PNG
@@ -63,7 +63,6 @@ def safe_ratio(n: Any) -> float:
 
 
 def load_config() -> str:
-    # A separate gamertag is not required; the source URL has the current value.
     return GAMERTAG
 
 
@@ -126,7 +125,6 @@ def load_source(root: Path, collector: Path | None) -> tuple[dict[str, Any], Pat
 def game_image_path(image_dir: Path | None, game_id: int) -> Path | None:
     if image_dir is None:
         return None
-    # Deliberately derive the name from the game ID, not untrusted JSON paths.
     for extension in VALID_IMAGE_EXTENSIONS:
         path = image_dir / f'{game_id}{extension}'
         if path.is_file() and detect_image_type(path):
@@ -170,6 +168,8 @@ def game_entry(item: dict[str, Any], image_dir: Path | None, output_dir: Path,
         'gamerscore': {'earned': numeric(gamerscore.get('earned')), 'total': numeric(gamerscore.get('total'))},
         'ta_score': {'earned': numeric(ta_score.get('earned')), 'total': numeric(ta_score.get('total'))},
         'ta_ratio': safe_ratio(item.get('ta_ratio')),
+        'trophy_case': item.get('trophy_case') is True,
+        'trophy_case_position': numeric(item.get('trophy_case_position')) if item.get('trophy_case_position') is not None else None,
         'image_src': image_link,
         'image_download_status': str(item.get('image_download_status') or 'not_attempted'),
         'url': url,
@@ -184,26 +184,26 @@ def card_html(game: dict[str, Any]) -> str:
     title = esc(game['title'])
     game_id = game['id']
     status = game['completion_status']
-    is_completed = status == 'completed'
-    if game['image_src']:
-        image_html = f'<img src="{esc(game["image_src"])}" alt="TrueAchievements summary for {title}" loading="lazy" decoding="async">'
-    else:
-        image_html = f'<span class="placeholder" aria-label="Image pending">{ICON}<span>Image pending</span></span>'
     p = game['completion_percentage']
     gs = game['gamerscore']['earned']
     ta = game['ta_score']['earned']
     a = game['achievements']
+    ratio = f"{game['ta_ratio']:.2f}×"
+    if game['image_src']:
+        image_html = f'<img src="{esc(game["image_src"])}" alt="TrueAchievements summary for {title}" loading="lazy" decoding="async">'
+        body_html = f'<span class="game-body compact-body"><span class="game-title">{title}</span><span class="card-ratio" title="Earned TA ratio">{ratio}</span></span>'
+    else:
+        image_html = (f'<span class="placeholder placeholder-data"><span class="placeholder-label">IMAGE PENDING</span>'
+            f'<span class="placeholder-progress">{p:g}%</span>'
+            f'<span class="placeholder-ach">{integer(a["earned"])} / {integer(a["total"])} achievements</span>'
+            f'<span class="placeholder-scores">TA {integer(ta)} · GS {integer(gs)}</span></span>')
+        body_html = f'<span class="game-body compact-body"><span class="game-title">{title}</span><span class="card-ratio" title="Earned TA ratio">{ratio}</span></span>'
     return f'''<button type="button" class="game-card" data-game-id="{game_id}" data-open-id="{game_id}"
     data-game-title="{title}" data-completion-status="{status}" data-ta-achievements-complete="{str(game['ta_achievements_complete']).lower()}"
     data-completion-source="trueachievements" data-image-available="{str(bool(game['image_src'])).lower()}"
     aria-label="View details for {title}">
-      <span class="card-visual">{image_html}<span class="card-status{' in-progress' if not is_completed else ''}">{esc(status_text(game))}</span></span>
-      <span class="game-body">
-        <span class="game-title">{title}</span>
-        <span class="game-row"><span class="ach-count">{integer(a['earned'])} / {integer(a['total'])} achievements</span><span class="percent">{p:g}%</span></span>
-        <span class="mini-progress" aria-hidden="true"><span style="width:{min(100,max(0,p)):g}%"></span></span>
-        <span class="game-footer"><span class="footer-item">GS <strong>{integer(gs)}</strong></span><span class="footer-item">TA <strong>{integer(ta)}</strong></span></span>
-      </span>
+      <span class="card-visual">{image_html}</span>
+      {body_html}
     </button>'''
 
 
@@ -220,9 +220,31 @@ def row_html(game: dict[str, Any]) -> str:
         f'<td>{"Yes" if game["image_src"] else "—"}</td></tr>')
 
 
+STAT_ICONS = {
+    'Total games': '<rect x="3" y="8" width="18" height="11" rx="5"/><path d="M8 11v5m-2.5-2.5h5M16 12h.01M19 15h.01"/>',
+    'Trophy Case': '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4ZM7 6H4v2a4 4 0 0 0 4 4M17 6h3v2a4 4 0 0 1-4 4"/>',
+    'Games 100%': '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
+    'In progress': '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/>',
+    'Gamerscore': '<path d="m12 2 2.8 6.2 6.8.8-5 4.7 1.3 6.7-5.9-3.2-5.9 3.2 1.3-6.7-5-4.7 6.8-.8Z"/>',
+    'TA score': '<path d="M3 18h18M6 15l4-5 4 3 5-8"/><path d="M16 5h3v3"/>',
+    'TA ratio': '<path d="M4 20 20 4M5 5h6v6H5zM13 13h6v6h-6z"/>',
+    'Achievements': '<circle cx="12" cy="8" r="5"/><path d="m8 13-2 9 6-3 6 3-2-9"/>',
+}
+
 def stat_html(label: str, value: str, sub: str) -> str:
-    return (f'<article class="stat"><div class="stat-top"><span class="stat-label">{esc(label)}</span></div>'
-            f'<strong class="stat-value">{esc(value)}</strong><span class="stat-sub">{esc(sub)}</span></article>')
+    symbol = STAT_ICONS.get(label,'')
+    icon = f'<svg class="stat-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{symbol}</svg>'
+    return (f'<article class="stat"><div class="stat-top">{icon}<span class="stat-label">{esc(label)}</span></div>'
+            f'<strong class="stat-value">{esc(value)}</strong></article>')
+
+
+def trophy_tile(game: dict[str, Any]) -> str:
+    title=esc(game['title'])
+    if game['image_src']:
+        visual=f'<img src="{esc(game["image_src"])}" alt="{title} achievement summary" loading="lazy" decoding="async">'
+    else:
+        visual=f'<span class="trophy-placeholder">{ICON}</span>'
+    return f'<button type="button" class="trophy-tile" data-open-id="{game["id"]}" title="{title}" aria-label="View {title}"><span class="trophy-art">{visual}</span><span class="trophy-name">{title}</span></button>'
 
 
 def timestamp_label(value: Any) -> str:
@@ -251,20 +273,24 @@ def build_html(data: dict[str, Any], games: list[dict[str, Any]], missing_count:
     percentage = 100.0 * total_complete / count if count else 0
     achievements_pct = 100.0 * total_ach / total_ach_possible if total_ach_possible else 0
     update = timestamp_label(data.get('exported_at'))
+    trophy_games = sorted((g for g in games if isinstance(g['trophy_case_position'], int) and g['trophy_case_position'] > 0), key=lambda g: (g['trophy_case_position'],g['id']))
+    trophy_count = len(trophy_games)
+    overall_ratio = total_ta / total_gs if total_gs else 0.0
     stats = ''.join([
-        stat_html('Total games', integer(count), f'{integer(total_incomplete)} in progress' + (f' · {integer(total_unknown)} unverified' if total_unknown else '')),
-        stat_html('TrueAchievements', integer(total_ta), f'of {integer(total_ta_possible)} possible TA'),
-        stat_html('Gamerscore', integer(total_gs), f'of {integer(total_gs_possible)} GS'),
-        stat_html('Achievements earned', integer(total_ach), f'of {integer(total_ach_possible)} achievements'),
-        stat_html('Games 100%', integer(total_complete), f'{percentage:.1f}% of tracked games'),
-        stat_html('Achievement completion', f'{achievements_pct:.1f}%', 'Weighted across all achievements'),
+        stat_html('Total games', integer(count), ''),
+        stat_html('Games 100%', integer(total_complete), ''),
+        stat_html('TA ratio', f'{overall_ratio:.2f}×', ''),
+        stat_html('TA score', integer(total_ta), ''),
+        stat_html('Gamerscore', integer(total_gs), ''),
+        stat_html('Achievements', integer(total_ach), ''),
     ])
+    trophy_markup = '\n'.join(trophy_tile(g) for g in trophy_games)
+    if not trophy_markup:
+        trophy_markup = '<p class="trophy-empty">Trophy Case order not synced yet. Open your Trophy Case in Chrome and use Sync Trophy Case in the TA Collector extension, then regenerate this site.</p>'
     json_payload = json.dumps({'games': games}, ensure_ascii=False, separators=(',', ':'))
-    # Safe in a script tag even for game titles containing markup or ampersands.
     json_payload = json_payload.replace('&', '\\u0026').replace('<', '\\u003c').replace('>', '\\u003e').replace('\u2028','\\u2028').replace('\u2029','\\u2029')
     game_cards = '\n'.join(card_html(g) for g in games)
     rows = '\n'.join(row_html(g) for g in games)
-    archive_note = 'Completion status reflects TA achievement progress (not the retired historical archive).'
     source_url = 'https://www.trueachievements.com/gamer/ForensicFlubber'
     return f'''<!doctype html>
 <html lang="en"><head>
@@ -280,28 +306,27 @@ def build_html(data: dict[str, Any], games: list[dict[str, Any]], missing_count:
   <div class="nav-links"><a class="nav-link" href="{esc(source_url)}" target="_blank" rel="noopener noreferrer">{ICON}<span>TrueAchievements</span></a><a class="nav-link" href="{esc(GITHUB_URL)}" target="_blank" rel="noopener noreferrer">&lt;/&gt;<span>GitHub</span></a></div>
 </nav></header>
 <main id="top" class="container">
-<section class="hero" aria-labelledby="page-title">
-  <p class="eyebrow">Personal game collection</p><h1 id="page-title">Achievement Archive.</h1>
-  <p class="hero-copy">A personal library of Xbox games, achievement progress and the numbers behind every unlock.</p>
-  <div class="hero-bottom"><span class="hero-pill">{ICON}<strong>{integer(count)} games tracked</strong></span><span class="hero-pill" aria-label="Achievement images archived"><strong>{integer(total_images)} / {integer(count)} images archived</strong></span><span class="hero-update">Last synchronized: {esc(update)}</span></div>
+<section class="trophy-section" aria-labelledby="trophy-title">
+  <div class="trophy-heading"><div><h1 id="trophy-title">Trophy Case</h1></div><a class="trophy-external" href="https://www.trueachievements.com/gamer/ForensicFlubber/trophycase" target="_blank" rel="noopener noreferrer">View on TA ↗</a></div>
+  <div class="trophy-grid">{trophy_markup}</div>
 </section>
-<section class="stats" aria-label="Your achievement statistics">{stats}</section>
+<section class="stats" aria-label="Achievement overview">{stats}</section>
+
 <section class="library" aria-labelledby="library-title"><div class="section-heading">
-  <div><h2 class="section-title" id="library-title">Game Library</h2><p class="section-description">Explore achievements, scores and the game summaries you've collected.</p></div>
+  <div><h2 class="section-title" id="library-title">Game Library</h2><p class="library-source">Source: <a href="{esc(source_url)}" target="_blank" rel="noopener noreferrer">TrueAchievements</a> · Updated {esc(update)}</p></div>
   <div class="view-switch" role="group" aria-label="Choose library layout"><button class="view-btn is-active" aria-pressed="true" type="button" data-view="gallery">{GRID_ICON} Gallery</button><button class="view-btn" aria-pressed="false" type="button" data-view="table">{LIST_ICON} Table</button></div>
 </div>
-<div class="filters" role="group" aria-label="Filter and sort games">
-  <label class="field"><span class="field-label">SEARCH GAMES</span><span class="input-wrap">{SEARCH_ICON}<input id="search" type="search" placeholder="Search by title..." autocomplete="off"></span></label>
-  <label class="field"><span class="field-label">ACHIEVEMENT STATUS</span><span class="select-wrap"><select id="status"><option value="all">All games</option><option value="completed">100% complete</option><option value="incomplete">In progress</option><option value="unverified">Unverified</option></select></span></label>
-  <label class="field"><span class="field-label">IMAGE AVAILABILITY</span><span class="select-wrap"><select id="images-filter"><option value="all">All images</option><option value="available">Downloaded only</option><option value="missing">Missing images</option></select></span></label>
-  <label class="field"><span class="field-label">SORT BY</span><span class="select-wrap"><select id="sort"><option value="ta-desc">TA score (highest)</option><option value="gs-desc">Gamerscore (highest)</option><option value="ach-desc">Achievements earned</option><option value="completion-desc">Completion (highest)</option><option value="completion-asc">Completion (lowest)</option><option value="ratio-desc">TA ratio (highest)</option><option value="title-asc">Title A–Z</option><option value="title-desc">Title Z–A</option></select></span></label>
+<div class="filters" aria-label="Filter and sort games">
+  <label class="field search-field"><span class="field-label">SEARCH GAMES</span><span class="input-wrap">{SEARCH_ICON}<input id="search" type="search" placeholder="Search by title..." autocomplete="off"></span></label>
+  <div class="button-filter"><span class="field-label">ACHIEVEMENT STATUS</span><div class="filter-actions" role="group" aria-label="Achievement status"><button type="button" class="filter-btn is-active" data-filter-status="all" aria-pressed="true">All games</button><button type="button" class="filter-btn" data-filter-status="completed" aria-pressed="false">Complete</button><button type="button" class="filter-btn" data-filter-status="incomplete" aria-pressed="false">In progress</button></div></div>
+  <div class="button-filter"><span class="field-label">IMAGES</span><div class="filter-actions" role="group" aria-label="Image availability"><button type="button" class="filter-btn is-active" data-filter-image="all" aria-pressed="true">All</button><button type="button" class="filter-btn" data-filter-image="available" aria-pressed="false">Archived</button><button type="button" class="filter-btn" data-filter-image="missing" aria-pressed="false">Missing</button></div></div>
+  <label class="field sort-field"><span class="field-label">SORT BY</span><span class="select-wrap"><select id="sort"><option value="ratio-desc" selected>TA ratio (highest)</option><option value="ta-desc">TA score (highest)</option><option value="gs-desc">Gamerscore (highest)</option><option value="ach-desc">Achievements earned</option><option value="completion-desc">Completion (highest)</option><option value="completion-asc">Completion (lowest)</option><option value="title-asc">Title A–Z</option><option value="title-desc">Title Z–A</option></select></span></label>
 </div>
 <div class="library-meta"><span class="results-line"><strong id="result-count">{integer(count)}</strong> games shown</span><button class="clear-btn" type="button" id="clear-filters" hidden>Clear filters</button></div>
 <div class="gallery" id="gallery" aria-label="Game gallery">{game_cards}</div>
-<div class="table-wrap" id="table-view" hidden><table class="game-table"><thead><tr><th scope="col">Game</th><th scope="col">Status</th><th scope="col">Progress</th><th scope="col">Achievements</th><th scope="col">Gamerscore</th><th scope="col">TA score</th><th scope="col">TA ratio</th><th scope="col">Image</th></tr></thead><tbody id="table-body">{rows}</tbody></table></div>
+<div class="table-wrap" id="table-view" hidden><table class="game-table"><thead><tr><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="title" aria-label="Sort by Game">Game<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="status" aria-label="Sort by Status">Status<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="completion" aria-label="Sort by Progress">Progress<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="ach" aria-label="Sort by Achievements">Achievements<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="gs" aria-label="Sort by Gamerscore">Gamerscore<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="ta" aria-label="Sort by TA score">TA score<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="descending"><button class="column-sort" type="button" data-sort-column="ratio" aria-label="Sort by TA ratio">TA ratio<span class="sort-indicator" aria-hidden="true">↓</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="image" aria-label="Sort by Image">Image<span class="sort-indicator" aria-hidden="true">↕</span></button></th></tr></thead><tbody id="table-body">{rows}</tbody></table></div>
 <div class="empty" id="empty-state" hidden><strong>No games found</strong>Try changing the search or filters.</div>
 </section></main>
-<footer class="site-footer"><div class="container"><span>{esc(archive_note)}</span><span>Source: <a href="{esc(source_url)}" target="_blank" rel="noopener noreferrer">TrueAchievements</a> · Updated {esc(update)}</span></div></footer>
 <dialog id="detail-dialog" class="detail-dialog" aria-labelledby="detail-title"><div class="dialog-inner">
   <div class="dialog-head"><div><p class="dialog-status" id="detail-status"></p><h2 class="dialog-title" id="detail-title"></h2></div><button type="button" class="dialog-close" id="detail-close" aria-label="Close details">×</button></div>
   <div class="dialog-image" id="detail-image"></div><div class="dialog-details" id="detail-metrics"></div>
@@ -321,7 +346,6 @@ def make_site(args: argparse.Namespace) -> tuple[Path, dict[str, int]]:
     else:
         print('No local image folder found: preview will display image placeholders.')
     dest = Path(args.output_dir).expanduser().resolve() if args.output_dir else ROOT / 'site'
-    # Safety: do not accidentally delete the source directory or the collector.
     if dest == ROOT or dest == collector or dest == img_dir or (dest in ROOT.parents):
         raise ValueError(f'Unsafe output directory: {dest}')
     if dest.exists():
@@ -345,7 +369,7 @@ def make_site(args: argparse.Namespace) -> tuple[Path, dict[str, int]]:
             expected += 1
             if not found:
                 missing_expected.append(game)
-    records.sort(key=lambda g: (-g['ta_score']['earned'],g['title'].casefold()))
+    records.sort(key=lambda g: (-g['ta_ratio'],g['title'].casefold()))
     (dest / 'index.html').write_text(build_html(data, records, len(missing_expected)),encoding='utf-8')
     (dest / 'data' / 'games.json').write_text(json.dumps({'source':data.get('source'),'exported_at':data.get('exported_at'),'completion_source':'ta_achievements_complete','games':records},indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
     favicon = ROOT / 'favicon.png'

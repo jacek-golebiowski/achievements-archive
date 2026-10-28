@@ -8,6 +8,7 @@ const stopEl=document.getElementById('stop');
 const exportEl=document.getElementById('export');
 const folderEl=document.getElementById('folder');
 const modeEl=document.getElementById('mode');
+const trophyEl=document.getElementById('trophy');
 let sourceValid=false;
 function inputReady(){return freshEl.checked||sourceValid;}
 function status(text){statusEl.textContent=text;}
@@ -21,10 +22,11 @@ async function refresh() {
   const stats=summarizeGames(saved.ta_games||[]);
   status(p.message||(stats.total?`${stats.total} saved game records.`:'Ready.'));
   startEl.disabled=!!p.running||!inputReady();
+  trophyEl.disabled=!!p.running||!sourceValid;
   stopEl.disabled=!p.running;
   exportEl.disabled=!!p.running||!stats.total;
-  countsEl.textContent=`Last saved database: ${stats.total} games · ${stats.downloaded} images · ${stats.failed} failed · ${stats.not_attempted} not attempted.`+
-    (saved.ta_last_export?`\nLast export: ${saved.ta_last_export.ok?'OK':'FAILED'} (${saved.ta_last_export.at}).`:'');
+  countsEl.textContent=`Saved: ${stats.total} games · ${stats.downloaded} images · ${stats.failed} failed · ${stats.not_attempted} pending`+
+    (saved.ta_last_export?`\nExport: ${saved.ta_last_export.ok?'OK':'FAILED'} · ${new Date(saved.ta_last_export.at).toLocaleString()}`:'');
 }
 async function readSelectedFile() {
   const file=fileEl.files?.[0];
@@ -50,7 +52,7 @@ fileEl.addEventListener('change',async()=>{
   }
 });
 freshEl.addEventListener('change',async()=>{
-  if(freshEl.checked){fileEl.value='';sourceValid=false;infoEl.textContent='Fresh start: the reference database will be empty. The first export creates games.json.';}
+  if(freshEl.checked){fileEl.value='';sourceValid=false;infoEl.textContent='Fresh start: empty database.';}
   else infoEl.textContent='Select the latest games.json from ta-collector/data/.';
   await refresh();
 });
@@ -58,7 +60,7 @@ startEl.addEventListener('click',async()=>{
   startEl.disabled=true;
   try {
     const fresh=freshEl.checked;
-    const games=fresh?[]:await readSelectedFile(); // Every non-fresh run reads the actual selected JSON.
+    const games=fresh?[]:await readSelectedFile();
     const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
     if(!tab?.id || !/^https:\/\/www\.trueachievements\.com\/gamer\/ForensicFlubber\/games(?:[?#]|$)/i.test(tab.url||''))
       throw Error('Open your ForensicFlubber games page and click Show All first.');
@@ -66,14 +68,27 @@ startEl.addEventListener('click',async()=>{
     await chrome.storage.local.set({ta_options:{mode:modeEl.value,folder}});
     const response=await message('START',{tabId:tab.id,mode:modeEl.value,folder,games,fresh});
     if(!response?.ok)throw Error(response?.error||'Unable to start.');
-    // Prevent another run from silently reusing the now-stale selected file.
     fileEl.value='';sourceValid=false;freshEl.checked=false;
-    infoEl.textContent='Run started. On your next run select the newly exported games.json.';
+    infoEl.textContent='Next run: select the newest exported games.json.';
     await refresh();
   } catch(error) {
     status('Error: '+error.message);
     startEl.disabled=!inputReady();
   }
+});
+trophyEl.addEventListener('click',async()=>{
+  trophyEl.disabled=true;
+  try {
+    const games=await readSelectedFile();
+    const [tab]=await chrome.tabs.query({active:true,currentWindow:true});
+    if(!tab?.id || !/^https:\/\/www\.trueachievements\.com\/gamer\/ForensicFlubber\/trophycase(?:[/?#]|$)/i.test(tab.url||''))
+      throw Error('Open your ForensicFlubber Trophy Case page first.');
+    const response=await message('TROPHY_SYNC',{tabId:tab.id,folder:folderEl.value.trim(),games});
+    if(!response?.ok)throw Error(response?.error||'Trophy Case sync failed.');
+    fileEl.value='';sourceValid=false;freshEl.checked=false;
+    infoEl.textContent=`Trophy Case synced (${response.count} games). Select exported games.json next time.`;
+    await refresh();
+  } catch(error) {status('Error: '+error.message);trophyEl.disabled=!sourceValid;}
 });
 stopEl.addEventListener('click',async()=>{
   await message('STOP');
@@ -91,6 +106,6 @@ chrome.storage.onChanged.addListener((changes,area)=>{
 });
 (async()=>{
   const x=await chrome.storage.local.get('ta_options');
-  if(x.ta_options){modeEl.value=VALID_MODES.has(x.ta_options.mode)?x.ta_options.mode:'missing';folderEl.value=x.ta_options.folder||'ta-collector';}
+  if(x.ta_options){modeEl.value=VALID_MODES.has(x.ta_options.mode)?x.ta_options.mode:'update';folderEl.value=x.ta_options.folder||'ta-collector';}
   await refresh();
 })();

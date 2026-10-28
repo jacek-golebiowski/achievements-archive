@@ -12,9 +12,13 @@
   const cardById = new Map([...gallery.children].map(el => [el.dataset.gameId, el]));
   const rowById = new Map([...tableBody.children].map(el => [el.dataset.gameId, el]));
   const search = document.getElementById('search');
-  const status = document.getElementById('status');
-  const images = document.getElementById('images-filter');
+  let selectedStatus = 'all';
+  let selectedImage = 'all';
+  const statusBtns = [...document.querySelectorAll('[data-filter-status]')];
+  const imageBtns = [...document.querySelectorAll('[data-filter-image]')];
   const sort = document.getElementById('sort');
+  const columnButtons = [...document.querySelectorAll('[data-sort-column]')];
+  let activeSort = 'ratio-desc';
   const resultCount = document.getElementById('result-count');
   const noResults = document.getElementById('empty-state');
   const tableView = document.getElementById('table-view');
@@ -35,25 +39,67 @@
     'completion-desc': (a,b) => Number(b.completion_percentage) - Number(a.completion_percentage) || byName(a,b),
     'completion-asc': (a,b) => Number(a.completion_percentage) - Number(b.completion_percentage) || byName(a,b),
     'ratio-desc': (a,b) => ratio(b)-ratio(a) || byName(a,b),
+    'ratio-asc': (a,b) => ratio(a)-ratio(b) || byName(a,b),
+    'ta-asc': (a,b) => score(a,'ta_score','earned') - score(b,'ta_score','earned') || byName(a,b),
+    'gs-asc': (a,b) => score(a,'gamerscore','earned') - score(b,'gamerscore','earned') || byName(a,b),
+    'ach-asc': (a,b) => score(a,'achievements','earned') - score(b,'achievements','earned') || byName(a,b),
+    'status-asc': (a,b) => a.completion_status.localeCompare(b.completion_status) || byName(a,b),
+    'status-desc': (a,b) => b.completion_status.localeCompare(a.completion_status) || byName(a,b),
+    'image-desc': (a,b) => Number(Boolean(b.image_src)) - Number(Boolean(a.image_src)) || byName(a,b),
+    'image-asc': (a,b) => Number(Boolean(a.image_src)) - Number(Boolean(b.image_src)) || byName(a,b),
   };
   function update() {
     const query = search.value.trim().toLocaleLowerCase();
-    const selectedStatus = status.value;
-    const selectedImage = images.value;
     const visible = games.filter(g => {
       return (!query || g.title.toLocaleLowerCase().includes(query))
         && (selectedStatus === 'all' || g.completion_status === selectedStatus)
         && (selectedImage === 'all' || (selectedImage === 'available') === Boolean(g.image_src));
-    }).sort(comparators[sort.value] || comparators['ta-desc']);
+    }).sort(comparators[activeSort] || comparators['ratio-desc']);
     gallery.replaceChildren(...visible.map(g => cardById.get(String(g.id))).filter(Boolean));
     tableBody.replaceChildren(...visible.map(g => rowById.get(String(g.id))).filter(Boolean));
     resultCount.textContent = integer.format(visible.length);
     noResults.hidden = visible.length !== 0;
-    clearBtn.hidden = !(query || selectedStatus !== 'all' || selectedImage !== 'all' || sort.value !== 'ta-desc');
+    clearBtn.hidden = !(query || selectedStatus !== 'all' || selectedImage !== 'all' || activeSort !== 'ratio-desc');
   }
-  [search, status, images, sort].forEach(el => { el.addEventListener('input', update); el.addEventListener('change', update); });
+  function reflectColumnSort() {
+    const [key, dir] = activeSort.split('-');
+    columnButtons.forEach(button => {
+      const selected = button.dataset.sortColumn === key;
+      button.closest('th').setAttribute('aria-sort', selected ? (dir === 'asc' ? 'ascending' : 'descending') : 'none');
+      button.querySelector('.sort-indicator').textContent = selected ? (dir === 'asc' ? '↑' : '↓') : '↕';
+    });
+  }
+  search.addEventListener('input', update);
+  sort.addEventListener('change', () => {
+    activeSort = sort.value;
+    if (!sort.selectedOptions[0]?.dataset.temporarySort) sort.querySelector('option[data-temporary-sort]')?.remove();
+    reflectColumnSort(); update();
+  });
+  const columnDefaults = {title:'asc', status:'asc', completion:'desc', ach:'desc', gs:'desc', ta:'desc', ratio:'desc', image:'desc'};
+  columnButtons.forEach(button => button.addEventListener('click', () => {
+    const key = button.dataset.sortColumn;
+    const current = activeSort.split('-');
+    const dir = current[0] === key ? (current[1] === 'asc' ? 'desc' : 'asc') : columnDefaults[key];
+    activeSort = `${key}-${dir}`;
+    const temporary = sort.querySelector('option[data-temporary-sort]');
+    if (temporary) temporary.remove();
+    if (![...sort.options].some(option => option.value === activeSort)) {
+      const tempOption = document.createElement('option');
+      tempOption.value = activeSort;
+      tempOption.dataset.temporarySort = 'true';
+      tempOption.textContent = `${button.textContent.replace(/[↕↑↓]/g, '').trim()} (${dir === 'asc' ? 'ascending' : 'descending'})`;
+      sort.add(tempOption);
+    }
+    sort.value = activeSort;
+    reflectColumnSort(); update();
+  }));
+  function setFilter(buttons, target) {
+    buttons.forEach(btn => { const active = btn === target; btn.classList.toggle('is-active', active); btn.setAttribute('aria-pressed', String(active)); });
+  }
+  statusBtns.forEach(btn => btn.addEventListener('click', () => { selectedStatus = btn.dataset.filterStatus; setFilter(statusBtns,btn); update(); }));
+  imageBtns.forEach(btn => btn.addEventListener('click', () => { selectedImage = btn.dataset.filterImage; setFilter(imageBtns,btn); update(); }));
   clearBtn.addEventListener('click', () => {
-    search.value = ''; status.value = 'all'; images.value = 'all'; sort.value = 'ta-desc'; update(); search.focus();
+    search.value = ''; selectedStatus = 'all'; selectedImage = 'all'; sort.querySelector('option[data-temporary-sort]')?.remove(); sort.value = 'ratio-desc'; activeSort = 'ratio-desc'; reflectColumnSort(); setFilter(statusBtns,statusBtns[0]); setFilter(imageBtns,imageBtns[0]); update(); search.focus();
   });
   const viewBtns = [...document.querySelectorAll('[data-view]')];
   function chooseView(view) {
@@ -112,5 +158,6 @@
     if (event.target === detail) detail.close();
   });
   chooseView('gallery');
+  reflectColumnSort();
   update();
 })();

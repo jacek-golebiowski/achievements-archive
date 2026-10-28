@@ -1,7 +1,6 @@
 importScripts('state.js');
-// Download transport deliberately retained from working v1.0.
 const GAMER_ID=1136202;
-const IMAGE_DELAY_MS=10000; // Wait 10 seconds after each attempt before next request.
+const IMAGE_DELAY_MS=20000;
 let active=false, stopped=false;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function extractTable(){
@@ -19,19 +18,32 @@ function extractTable(){
   const percent=Number((cells[5].textContent.match(/[\d.]+/)||[])[0]);
   const ratio=Number((cells[6].textContent.match(/[\d.]+/)||[])[0]);
   const ratingValue=row.querySelector('select[data-id] option:checked')?.value;
-  const trophy=!!row.querySelector('a[href*="btnRemoveFromTrophyCase"]');
   const imgThumb=cells[0].querySelector('img')?.getAttribute('src');
   items.push({id,title:gameLink.textContent.trim(),url:new URL(gameLink.getAttribute('href'),location.origin).href,
    achievements:ach,ta_score:ta,gamerscore:gs,
    completion_percentage:Number.isFinite(percent)?percent:null,
    ta_ratio:Number.isFinite(ratio)?ratio:null,
    personal_rating:ratingValue && /^\d/.test(ratingValue)?Number(ratingValue):null,
-   trophy_case:trophy,thumbnail_url:imgThumb?new URL(imgThumb,location.origin).href:null,
+   thumbnail_url:imgThumb?new URL(imgThumb,location.origin).href:null,
    image_url:`https://img.trueachievements.com/game/${id}/1136202`,
    ta_achievements_complete:ach.earned!==null&&ach.total>0&&ach.earned===ach.total,
    archive_completed:null});
  }
  return {games:items,location:location.href,showAllVisible:!![...document.querySelectorAll('#oGamerGamesListContent a')].find(a=>/show all/i.test(a.textContent||''))};
+}
+function extractTrophyCase(){
+ const table=document.querySelector('#oTrophyCaseList');
+ if(!table)return {error:'Trophy Case table not found. Open your Trophy Case page.'};
+ const rows=[...table.querySelectorAll('tbody tr')].filter(r=>r.querySelector('td.game a[href*="/game/"]'));
+ const ids=[];
+ for(const row of rows){
+   const id=Number((row.id||'').match(/^ach-(\d+)$/)?.[1]);
+   if(!Number.isSafeInteger(id)||id<=0)return {error:'Unrecognized Trophy Case game ID in row.'};
+   ids.push(id);
+ }
+ if(!ids.length)return {error:'No Trophy Case games found. Check that the page finished loading.'};
+ if(new Set(ids).size!==ids.length)return {error:'Duplicate Trophy Case entries detected.'};
+ return {ids};
 }
 function downloadOne(url,filename){
  return new Promise(resolve=>{
@@ -97,8 +109,6 @@ async function startJob(tabId,mode,folder,referenceGames) {
   active=true;stopped=false;
   let savedAtLeastOnce=false;
   try {
-    // Important: the reference came from games.json selected for THIS run.
-    // Do not hydrate from extension storage, old exports, or downloads history.
     const reference=readGamesJson({games:referenceGames,gamer_id:GAMER_ID});
     await progress(reference.length?`Read ${reference.length} existing game IDs from games.json. Scanning Show All…`:'Fresh start: no existing records. Scanning Show All…');
     const executed=await chrome.scripting.executeScript({target:{tabId},func:extractTable});
@@ -134,7 +144,8 @@ async function startJob(tabId,mode,folder,referenceGames) {
         game.image_mime=result.mime;game.image_bytes=result.bytes;
         game.image_download_id=result.download_id;
         game.image_last_downloaded_at=new Date().toISOString();
-        game.image_completion_refresh_pending=false;
+        game.image_refresh_pending=false;
+        delete game.image_completion_refresh_pending;
       } else {
         failed++;
         consecutiveServerFailures=/SERVER_FAILED/.test(result.error||'')?consecutiveServerFailures+1:0;
@@ -145,7 +156,11 @@ async function startJob(tabId,mode,folder,referenceGames) {
           game.image_error=result.error;
           game.image_last_error_at=new Date().toISOString();
         }
-        // A failed refresh cannot destroy an earlier successful image record.
+        game.image_refresh_pending=true;
+        if(earlierImage) {
+          game.image_error=result.error;
+          game.image_last_error_at=new Date().toISOString();
+        }
       }
       await persist();
       if(consecutiveServerFailures>=5){circuitBroken=true;break;}
@@ -167,10 +182,38 @@ async function startJob(tabId,mode,folder,referenceGames) {
     await progress(msg,false);
   } finally {active=false;}
 }
+async function syncTrophyCase(tabId,folder,referenceGames) {
+  active=true;
+  try {
+    const games=readGamesJson({games:referenceGames,gamer_id:GAMER_ID});
+    const extracted=await chrome.scripting.executeScript({target:{tabId},func:extractTrophyCase});
+    const result=extracted?.[0]?.result;
+    if(result?.error)throw Error(result.error);
+    if(!Array.isArray(result?.ids)||!result.ids.length)throw Error('Could not read Trophy Case order.');
+    const available=new Set(games.map(g=>Number(g.id)));
+    const missing=result.ids.filter(id=>!available.has(id));
+    if(missing.length)throw Error(`Trophy Case contains ${missing.length} game(s) missing from this games.json (${missing.join(', ')}). Run Update with your latest JSON first.`);
+    const positions=new Map(result.ids.map((id,index)=>[id,index+1]));
+    for(const game of games){
+      const position=positions.get(Number(game.id));
+      game.trophy_case=position!==undefined;
+      if(position!==undefined)game.trophy_case_position=position;
+      else delete game.trophy_case_position;
+    }
+    await chrome.storage.local.set({ta_games:games,ta_failures:unresolvedFailures(games)});
+    const exported=await exportSnapshot(folder,'trophy_case_sync');
+    await progress(`Trophy Case synced: ${positions.size} games in exact order. JSON export: ${exported.ok?'OK':'FAILED — export again'}.`,false);
+    return {ok:exported.ok,count:positions.size,error:exported.ok?null:'JSON export failed; use manual export.'};
+  } catch(e) {
+    const err=String(e?.message||e);
+    await progress('Trophy Case sync failed: '+err,false);
+    return {ok:false,error:err};
+  } finally {active=false;}
+}
 chrome.runtime.onMessage.addListener((msg,sender,reply)=>{
   if(msg.type==='START') {
     if(active){reply({ok:false,error:'A run is already active.'});return;}
-    if(!VALID_MODES.has(msg.mode)){reply({ok:false,error:'Choose Missing Only or New + Incomplete.'});return;}
+    if(!VALID_MODES.has(msg.mode)){reply({ok:false,error:'Choose Missing Images or Update.'});return;}
     const folder=String(msg.folder||'ta-collector').trim();
     if(!/^[\w .-]+$/.test(folder)||folder==='.'||folder==='..'){
       reply({ok:false,error:'Folder must be a single simple subfolder name.'});return;
@@ -182,6 +225,19 @@ chrome.runtime.onMessage.addListener((msg,sender,reply)=>{
     catch(e){reply({ok:false,error:String(e.message||e)});return;}
     reply({ok:true});
     startJob(msg.tabId,msg.mode,folder,msg.games);
+  } else if(msg.type==='TROPHY_SYNC') {
+    if(active){reply({ok:false,error:'A run is already active.'});return;}
+    const folder=String(msg.folder||'ta-collector').trim();
+    if(!/^[\w .-]+$/.test(folder)||folder==='.'||folder==='..'){
+      reply({ok:false,error:'Folder must be a single simple subfolder name.'});return;
+    }
+    if(!Array.isArray(msg.games)||!msg.games.length){
+      reply({ok:false,error:'Select the latest games.json to sync Trophy Case.'});return;
+    }
+    try{readGamesJson({games:msg.games,gamer_id:GAMER_ID});}
+    catch(e){reply({ok:false,error:String(e.message||e)});return;}
+    syncTrophyCase(msg.tabId,folder,msg.games).then(reply).catch(e=>reply({ok:false,error:String(e)}));
+    return true;
   } else if(msg.type==='STOP') {
     stopped=true;reply({ok:true});
   } else if(msg.type==='EXPORT') {

@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "TA Show-All Collector",
+  "version": "3.7.0",
+  "description": "Sync game achievements and images; independently capture ordered Trophy Case from the open page.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://img.trueachievements.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

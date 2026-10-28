@@ -1,7 +1,5 @@
-/* Collector data rules.  The selected games.json is the source of truth for
- * existing IDs and image download status on EVERY run.  No migration system. */
 const COLLECTOR_GAMER_ID = 1136202;
-const VALID_MODES = new Set(['missing','incomplete']);
+const VALID_MODES = new Set(['missing','update']);
 function gameId(value) {
   const n=Number(value);
   return Number.isSafeInteger(n)&&n>0?String(n):null;
@@ -16,8 +14,10 @@ function normalizeGame(game) {
     result.image_file=null;
     result.image_download_status=result.image_download_status==='failed'?'failed':'not_attempted';
   } else {
-    result.image_error=null;
-    result.image_last_error_at=null;
+    if(result.image_refresh_pending!==true) {
+      result.image_error=null;
+      result.image_last_error_at=null;
+    }
   }
   return result;
 }
@@ -44,32 +44,34 @@ function mergeScrapedGames(reference,live) {
     const id=gameId(item.id);
     if(!id)continue;
     const old=byId.get(id);
-    const merged={...(old||{}),...item};
-    // The scraper knows achievements but not the archive's private completion flag.
+    const changed=!!old && (
+      old.achievements?.earned!==item.achievements?.earned ||
+      old.achievements?.total!==item.achievements?.total
+    );
+    const {trophy_case, trophy_case_position, ...liveFields}=item;
+    const merged={...(old||{}),...liveFields};
     if(old && old.archive_completed!=null)merged.archive_completed=old.archive_completed;
-    // An incomplete -> complete achievement transition needs a FINAL image,
-    // even though the current live record is now completed. Carry this intent
-    // across unsuccessful downloads so it can be retried on the next run.
-    if(old && old.ta_achievements_complete === false && item.ta_achievements_complete === true) {
-      merged.image_completion_refresh_pending=true;
-    }
+    merged.image_refresh_pending=!old || changed ||
+      old.image_refresh_pending===true ||
+      old.image_completion_refresh_pending===true ||
+      (!!old && !hasImage(old) && old.image_download_status==='failed');
+    delete merged.image_completion_refresh_pending;
     if(!old) {
-      merged.image_completion_refresh_pending=false;
       merged.image_download_status='not_attempted';
       merged.image_file=null;
       merged.image_error=null;
     }
     byId.set(id,normalizeGame(merged));
   }
-  return {games:[...byId.values()], knownIds:ids};
+  return {games:[...byId.values()],knownIds:ids};
 }
 function shouldDownload(mode,game,isKnown) {
   if(mode==='missing')return !hasImage(game);
-  if(mode==='incomplete')return !isKnown || game.ta_achievements_complete!==true || game.image_completion_refresh_pending===true;
+  if(mode==='update')return !isKnown || game.image_refresh_pending===true;
   throw Error('Unknown synchronization mode.');
 }
 function unresolvedFailures(games) {
-  return games.filter(g=>g.image_download_status==='failed' && !hasImage(g))
+  return games.filter(g=>g.image_download_status==='failed' || (g.image_refresh_pending===true && !!g.image_error))
     .map(g=>({id:g.id,title:g.title||`Game ${g.id}`,url:g.image_url,
       error:g.image_error||'Unknown download error',time:g.image_last_error_at||null}));
 }

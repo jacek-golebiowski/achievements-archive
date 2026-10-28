@@ -1,97 +1,59 @@
-# Arctic + Pistachio — Achievement Archive
+# ForensicFlubber — Achievement Archive
 
-A self-contained, Cloudflare Pages-ready gaming archive powered by the TA Show-All Collector's `games.json` and downloaded summary images. The old `completions/`, `incomplete/`, profile image, screenshot naming convention and historical completion dates are **not used**.
+A personal Xbox achievement archive built around [TrueAchievements]. The project preserves game progress, achievement statistics, and personalized TrueAchievements game-summary images in a searchable, publicly accessible collection.
 
-## Folder layout
+**Live archive:** [achievement-archive.pages.dev](https://achievement-archive.pages.dev)
 
-Put the collector download folder next to `achievement_archive.py` like this:
+## Overview
 
-```
-achievement_archive_arctic/
-├── achievement_archive.py
-├── config.py
-├── assets/
-│   ├── style.css
-│   └── app.js
-├── data/
-│   └── games.json               # included preview/fallback database
-├── chrome_data_download/
-│   └── ta-collector/
-│       ├── data/
-│       │   ├── games.json       # latest collector export (preferred)
-│       │   └── ta_failures.json # not needed by the website
-│       └── images/
-│           ├── 17944.png
-│           └── ...
-└── site/                         # generated for hosting
-    ├── index.html
-    ├── favicon.svg
-    ├── assets/
-    ├── data/games.json
-    └── images/                  # created when images are available
-```
+The project consists of two connected components:
 
-Your downloaded folder was named `chrome_data_download/ta-collector` (shown as `CHROME_DATA_DOWNLOAD` in Finder), so the generator automatically searches for either capitalization. **Copy the whole `ta-collector` folder**, keeping its `data/` and `images/` directories, under `chrome_data_download/` next to this script.
+- **Archive website** — A static, responsive gallery and table of games, achievement progress, Gamerscore, TrueAchievements scores, and TA ratios. It features an ordered Trophy Case, sortable columns, search, and status and image filters.
+- **TA Show-All Collector** — A Chrome extension that reads the game list from TrueAchievements, updates the archive's JSON database, and downloads game-summary images for new or changed entries.
 
-If the collector files live elsewhere, use:
+The website uses an Arctic-blue and pistachio theme and is deployed on Cloudflare Pages.
 
-```
-python3 achievement_archive.py --collector-dir "/full/path/to/ta-collector"
+## How it works
+
+1. The collector reads the expanded **Show all** games table on the TrueAchievements profile and compares the latest achievement counts with the imported `games.json`.
+2. **Update** refreshes game metadata and downloads images only for new games, changed earned/total achievement counts, or pending image retries. **Missing Images** targets entries without a successfully archived image.
+3. A separate **Sync Trophy Case** action reads the Trophy Case page, records membership and display order, and leaves game images untouched.
+4. The collector exports `games.json` and `ta_failures.json`, while downloaded images are stored separately.
+5. `achievement_archive.py` builds the static website from the exported database and local image files. The Trophy Case and game library reuse the same archived images.
+
+Image downloads are sequential and throttled to reduce server rate-limit errors. Successful image records are retained if a later refresh fails.
+
+## Repository structure
+
+```text
+achievement_archive.py       Website generator and deployment entry point
+config.py                    Local configuration
+assets/                      Website styles and JavaScript
+  style.css
+  app.js
+ta_showall_extension/       Chrome extension source
+favicon.png                  Website favicon
+build.command                Build helper
 ```
 
-The script also checks `ta-collector/` beside itself and under the macOS `~/Downloads` folder. If none are found, it uses the included `data/games.json` only as a demo/preview. It cannot read image files that are still on your own computer until you place them beside the script or pass their location.
+The collector's exported database and image directory are local inputs, not required source files in the repository.
 
-## Generate the website
+## Build and deployment
 
-Requires **Python 3.9 or newer**, standard library only; no pip packages needed:
+With the collector export available in the configured local data directory:
 
-```
+```bash
 python3 achievement_archive.py
 ```
 
-Or double-click `build.command` on macOS. Open the newly created **`site/index.html`** in a browser. Search, filtering, details and both Gallery/Table views work even as a local file, without a server.
+The generated static website is written to `site/`.
 
-The generator creates the `site/` folder from scratch. **Don't place source images or custom changes in `site/`**: they will be removed on each build. Keep collector originals inside `chrome_data_download/ta-collector`.
+To build and publish to Cloudflare Pages through Wrangler:
 
-### Images and file extensions
-
-The collector saves some real JPEG files with a `.png` filename. This script checks the image signature and exports JPEGs as `.jpg` (or true PNG/WebP when appropriate), preventing broken file types on Cloudflare Pages. The exported JSON contains the correct image paths. No network requests are made to TrueAchievements during generation or viewing the website.
-
-A game whose picture is not downloaded yet gets a blue **Image pending** placeholder; the stats and game card are still displayed. A `downloaded` record whose actual file is missing is reported as a warning, and publishing is blocked unless `--allow-missing-images` is explicitly supplied.
-
-## Publish to Cloudflare Pages
-
-As before, you need Node.js/npm and access to your Cloudflare account through Wrangler. The configured Pages project is `achievement-archive`.
-
-```
+```bash
 python3 achievement_archive.py --publish
 ```
 
-The script builds the site and then runs Wrangler. It will deploy **the generated `site/` folder**, including the images you've downloaded. You can also upload that folder directly using Cloudflare Pages.
+## Data sources
 
-To change the project name:
-
-```
-python3 achievement_archive.py --publish --project-name another-project
-```
-
-## Updating
-
-1. Let the Chrome extension export its latest `data/games.json` and new images.
-2. Make sure they are present in the `chrome_data_download/ta-collector` folder used by the generator.
-3. Run `python3 achievement_archive.py` again, or `--publish` to redeploy.
-
-No database migrations or separate completion-date records are required.
-
-## Data and completion semantics
-
-- Game data and totals are derived from the TrueAchievements collector JSON. The collector's `ta_achievements_complete` field is the basis for **100% complete** versus **in progress**. Missing flag = **unverified**.
-- `archive_completed`, personal ratings and trophy-case selections are deliberately ignored.
-- Weighted achievement completion % = total earned achievements / total listed achievements. Game completion % = share of games marked `ta_achievements_complete: true`.
-- Completion dates are not guessed. Games can change from complete to incomplete when DLC adds achievements; rebuild with a newer collector JSON to reflect that change.
-- Each static HTML card has `data-completion-status`, `data-ta-achievements-complete`, `data-completion-source="trueachievements"`, and a unique game ID. The public `site/data/games.json` includes the same explicitly labeled status.
-- Images are local assets in the deployed website. No Cloudflare/TA image downloads are performed by the website itself.
-
-## Included preview
-
-This package includes the latest uploaded snapshot: **424 games** from October 27, 2026, with downloaded images *not bundled* (you said those are on your computer). The prebuilt `site/` demonstrates the page with placeholders. Rebuild locally with your `chrome_data_download/ta-collector` to include your images.
+Achievement counts, Gamerscore, TrueAchievements scores, ratios, and Trophy Case ordering originate from [TrueAchievements](https://www.trueachievements.com/). The collection is an independent archival project and is not affiliated with or endorsed by TrueAchievements or Microsoft.
