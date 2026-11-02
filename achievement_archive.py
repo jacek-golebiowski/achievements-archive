@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -168,6 +169,7 @@ def game_entry(item: dict[str, Any], image_dir: Path | None, output_dir: Path,
         'gamerscore': {'earned': numeric(gamerscore.get('earned')), 'total': numeric(gamerscore.get('total'))},
         'ta_score': {'earned': numeric(ta_score.get('earned')), 'total': numeric(ta_score.get('total'))},
         'ta_ratio': safe_ratio(item.get('ta_ratio')),
+        'activity_order': numeric(item.get('activity_order')) if numeric(item.get('activity_order')) > 0 else None,
         'trophy_case': item.get('trophy_case') is True,
         'trophy_case_position': numeric(item.get('trophy_case_position')) if item.get('trophy_case_position') is not None else None,
         'image_src': image_link,
@@ -320,11 +322,11 @@ def build_html(data: dict[str, Any], games: list[dict[str, Any]], missing_count:
   <label class="field search-field"><span class="field-label">SEARCH GAMES</span><span class="input-wrap">{SEARCH_ICON}<input id="search" type="search" placeholder="Search by title..." autocomplete="off"></span></label>
   <div class="button-filter"><span class="field-label">ACHIEVEMENT STATUS</span><div class="filter-actions" role="group" aria-label="Achievement status"><button type="button" class="filter-btn is-active" data-filter-status="all" aria-pressed="true">All games</button><button type="button" class="filter-btn" data-filter-status="completed" aria-pressed="false">Complete</button><button type="button" class="filter-btn" data-filter-status="incomplete" aria-pressed="false">In progress</button></div></div>
   <div class="button-filter"><span class="field-label">IMAGES</span><div class="filter-actions" role="group" aria-label="Image availability"><button type="button" class="filter-btn is-active" data-filter-image="all" aria-pressed="true">All</button><button type="button" class="filter-btn" data-filter-image="available" aria-pressed="false">Archived</button><button type="button" class="filter-btn" data-filter-image="missing" aria-pressed="false">Missing</button></div></div>
-  <label class="field sort-field"><span class="field-label">SORT BY</span><span class="select-wrap"><select id="sort"><option value="ratio-desc" selected>TA ratio (highest)</option><option value="ta-desc">TA score (highest)</option><option value="gs-desc">Gamerscore (highest)</option><option value="ach-desc">Achievements earned</option><option value="completion-desc">Completion (highest)</option><option value="completion-asc">Completion (lowest)</option><option value="title-asc">Title A–Z</option><option value="title-desc">Title Z–A</option></select></span></label>
+  <label class="field sort-field"><span class="field-label">SORT BY</span><span class="select-wrap"><select id="sort"><option value="activity-asc" selected>Recently Unlocked (Most Recent)</option><option value="activity-desc">Recently Unlocked (Least Recent)</option><option value="ratio-desc">TA ratio (highest)</option><option value="ta-desc">TA score (highest)</option><option value="gs-desc">Gamerscore (highest)</option><option value="ach-desc">Achievements earned</option><option value="completion-desc">Completion (highest)</option><option value="completion-asc">Completion (lowest)</option><option value="title-asc">Title A–Z</option><option value="title-desc">Title Z–A</option></select></span></label>
 </div>
 <div class="library-meta"><span class="results-line"><strong id="result-count">{integer(count)}</strong> games shown</span><button class="clear-btn" type="button" id="clear-filters" hidden>Clear filters</button></div>
 <div class="gallery" id="gallery" aria-label="Game gallery">{game_cards}</div>
-<div class="table-wrap" id="table-view" hidden><table class="game-table"><thead><tr><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="title" aria-label="Sort by Game">Game<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="status" aria-label="Sort by Status">Status<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="completion" aria-label="Sort by Progress">Progress<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="ach" aria-label="Sort by Achievements">Achievements<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="gs" aria-label="Sort by Gamerscore">Gamerscore<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="ta" aria-label="Sort by TA score">TA score<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="descending"><button class="column-sort" type="button" data-sort-column="ratio" aria-label="Sort by TA ratio">TA ratio<span class="sort-indicator" aria-hidden="true">↓</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="image" aria-label="Sort by Image">Image<span class="sort-indicator" aria-hidden="true">↕</span></button></th></tr></thead><tbody id="table-body">{rows}</tbody></table></div>
+<div class="table-wrap" id="table-view" hidden><table class="game-table"><thead><tr><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="title" aria-label="Sort by Game">Game<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="status" aria-label="Sort by Status">Status<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="completion" aria-label="Sort by Progress">Progress<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="ach" aria-label="Sort by Achievements">Achievements<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="gs" aria-label="Sort by Gamerscore">Gamerscore<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="ta" aria-label="Sort by TA score">TA score<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="ratio" aria-label="Sort by TA ratio">TA ratio<span class="sort-indicator" aria-hidden="true">↕</span></button></th><th scope="col" aria-sort="none"><button class="column-sort" type="button" data-sort-column="image" aria-label="Sort by Image">Image<span class="sort-indicator" aria-hidden="true">↕</span></button></th></tr></thead><tbody id="table-body">{rows}</tbody></table></div>
 <div class="empty" id="empty-state" hidden><strong>No games found</strong>Try changing the search or filters.</div>
 </section></main>
 <dialog id="detail-dialog" class="detail-dialog" aria-labelledby="detail-title"><div class="dialog-inner">
@@ -350,6 +352,7 @@ def make_site(args: argparse.Namespace) -> tuple[Path, dict[str, int]]:
         raise ValueError(f'Unsafe output directory: {dest}')
     if dest.exists():
         shutil.rmtree(dest)
+        time.sleep(2)
     (dest / 'assets').mkdir(parents=True, exist_ok=True)
     (dest / 'data').mkdir(parents=True, exist_ok=True)
     shutil.copy2(ASSETS / 'style.css', dest / 'assets' / 'style.css')
@@ -369,7 +372,7 @@ def make_site(args: argparse.Namespace) -> tuple[Path, dict[str, int]]:
             expected += 1
             if not found:
                 missing_expected.append(game)
-    records.sort(key=lambda g: (-g['ta_ratio'],g['title'].casefold()))
+    records.sort(key=lambda g: (g['activity_order'] if g['activity_order'] is not None else float('inf'), g['title'].casefold()))
     (dest / 'index.html').write_text(build_html(data, records, len(missing_expected)),encoding='utf-8')
     (dest / 'data' / 'games.json').write_text(json.dumps({'source':data.get('source'),'exported_at':data.get('exported_at'),'completion_source':'ta_achievements_complete','games':records},indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
     favicon = ROOT / 'favicon.png'

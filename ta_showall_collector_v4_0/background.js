@@ -19,7 +19,7 @@ function extractTable(){
   const ratio=Number((cells[6].textContent.match(/[\d.]+/)||[])[0]);
   const ratingValue=row.querySelector('select[data-id] option:checked')?.value;
   const imgThumb=cells[0].querySelector('img')?.getAttribute('src');
-  items.push({id,title:gameLink.textContent.trim(),url:new URL(gameLink.getAttribute('href'),location.origin).href,
+  items.push({id,activity_order:items.length+1,title:gameLink.textContent.trim(),url:new URL(gameLink.getAttribute('href'),location.origin).href,
    achievements:ach,ta_score:ta,gamerscore:gs,
    completion_percentage:Number.isFinite(percent)?percent:null,
    ta_ratio:Number.isFinite(ratio)?ratio:null,

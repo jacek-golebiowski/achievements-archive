@@ -18,7 +18,7 @@
   const imageBtns = [...document.querySelectorAll('[data-filter-image]')];
   const sort = document.getElementById('sort');
   const columnButtons = [...document.querySelectorAll('[data-sort-column]')];
-  let activeSort = 'ratio-desc';
+  let activeSort = 'activity-asc';
   const resultCount = document.getElementById('result-count');
   const noResults = document.getElementById('empty-state');
   const tableView = document.getElementById('table-view');
@@ -30,7 +30,10 @@
   const score = (g, key, prop) => (Number(g?.[key]?.[prop]) || 0);
   const ratio = g => Number.isFinite(Number(g.ta_ratio)) ? Number(g.ta_ratio) : 0;
   const byName = (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true });
+  const activityPosition = g => Number.isInteger(Number(g.activity_order)) && Number(g.activity_order) > 0 ? Number(g.activity_order) : null;
   const comparators = {
+    'activity-asc': (a,b) => (activityPosition(a) ?? Infinity) - (activityPosition(b) ?? Infinity) || byName(a,b),
+    'activity-desc': (a,b) => (activityPosition(b) ?? -Infinity) - (activityPosition(a) ?? -Infinity) || byName(a,b),
     'title-asc': (a,b) => byName(a,b),
     'title-desc': (a,b) => byName(b,a),
     'ta-desc': (a,b) => score(b,'ta_score','earned') - score(a,'ta_score','earned') || byName(a,b),
@@ -54,12 +57,12 @@
       return (!query || g.title.toLocaleLowerCase().includes(query))
         && (selectedStatus === 'all' || g.completion_status === selectedStatus)
         && (selectedImage === 'all' || (selectedImage === 'available') === Boolean(g.image_src));
-    }).sort(comparators[activeSort] || comparators['ratio-desc']);
+    }).sort(comparators[activeSort] || comparators['activity-asc']);
     gallery.replaceChildren(...visible.map(g => cardById.get(String(g.id))).filter(Boolean));
     tableBody.replaceChildren(...visible.map(g => rowById.get(String(g.id))).filter(Boolean));
     resultCount.textContent = integer.format(visible.length);
     noResults.hidden = visible.length !== 0;
-    clearBtn.hidden = !(query || selectedStatus !== 'all' || selectedImage !== 'all' || activeSort !== 'ratio-desc');
+    clearBtn.hidden = !(query || selectedStatus !== 'all' || selectedImage !== 'all' || activeSort !== 'activity-asc');
   }
   function reflectColumnSort() {
     const [key, dir] = activeSort.split('-');
@@ -99,7 +102,7 @@
   statusBtns.forEach(btn => btn.addEventListener('click', () => { selectedStatus = btn.dataset.filterStatus; setFilter(statusBtns,btn); update(); }));
   imageBtns.forEach(btn => btn.addEventListener('click', () => { selectedImage = btn.dataset.filterImage; setFilter(imageBtns,btn); update(); }));
   clearBtn.addEventListener('click', () => {
-    search.value = ''; selectedStatus = 'all'; selectedImage = 'all'; sort.querySelector('option[data-temporary-sort]')?.remove(); sort.value = 'ratio-desc'; activeSort = 'ratio-desc'; reflectColumnSort(); setFilter(statusBtns,statusBtns[0]); setFilter(imageBtns,imageBtns[0]); update(); search.focus();
+    search.value = ''; selectedStatus = 'all'; selectedImage = 'all'; sort.querySelector('option[data-temporary-sort]')?.remove(); sort.value = 'activity-asc'; activeSort = 'activity-asc'; reflectColumnSort(); setFilter(statusBtns,statusBtns[0]); setFilter(imageBtns,imageBtns[0]); update(); search.focus();
   });
   const viewBtns = [...document.querySelectorAll('[data-view]')];
   function chooseView(view) {

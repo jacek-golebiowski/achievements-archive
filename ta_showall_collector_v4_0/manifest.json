@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TA Show-All Collector",
-  "version": "3.9.0",
-  "description": "Single Update queue with versioned image requests and separate Trophy Case sync.",
+  "version": "4.0.0",
+  "description": "Unified image updates, Trophy Case sync and latest achievement activity ordering.",
   "permissions": [
     "activeTab",
     "scripting",
