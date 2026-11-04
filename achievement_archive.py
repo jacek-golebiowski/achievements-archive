@@ -159,6 +159,8 @@ def game_entry(item: dict[str, Any], image_dir: Path | None, output_dir: Path,
     url = str(item.get('url') or '')
     if not url.startswith('https://www.trueachievements.com/'):
         url = f'https://www.trueachievements.com/gamer/ForensicFlubber/games'
+    trophy_position = numeric(item.get('trophy_case_position'))
+    trophy_member = trophy_position > 0 or item.get('trophy_case') is True
     return ({
         'id': game_id,
         'title': str(item.get('title') or f'Game {game_id}'),
@@ -170,8 +172,8 @@ def game_entry(item: dict[str, Any], image_dir: Path | None, output_dir: Path,
         'ta_score': {'earned': numeric(ta_score.get('earned')), 'total': numeric(ta_score.get('total'))},
         'ta_ratio': safe_ratio(item.get('ta_ratio')),
         'activity_order': numeric(item.get('activity_order')) if numeric(item.get('activity_order')) > 0 else None,
-        'trophy_case': item.get('trophy_case') is True,
-        'trophy_case_position': numeric(item.get('trophy_case_position')) if item.get('trophy_case_position') is not None else None,
+        'trophy_case': trophy_member,
+        'trophy_case_position': trophy_position if trophy_position > 0 else None,
         'image_src': image_link,
         'image_download_status': str(item.get('image_download_status') or 'not_attempted'),
         'url': url,
@@ -191,6 +193,7 @@ def card_html(game: dict[str, Any]) -> str:
     ta = game['ta_score']['earned']
     a = game['achievements']
     ratio = f"{game['ta_ratio']:.4f}×"
+    trophy_class = ' trophy-featured' if game['trophy_case'] else ''
     if game['image_src']:
         image_html = f'<img src="{esc(game["image_src"])}" alt="TrueAchievements summary for {title}" loading="lazy" decoding="async">'
         body_html = f'<span class="game-body compact-body"><span class="game-title">{title}</span><span class="card-ratio" title="Earned TA ratio">{ratio}</span></span>'
@@ -200,7 +203,7 @@ def card_html(game: dict[str, Any]) -> str:
             f'<span class="placeholder-ach">{integer(a["earned"])} / {integer(a["total"])} achievements</span>'
             f'<span class="placeholder-scores">TA {integer(ta)} · GS {integer(gs)}</span></span>')
         body_html = f'<span class="game-body compact-body"><span class="game-title">{title}</span><span class="card-ratio" title="Earned TA ratio">{ratio}</span></span>'
-    return f'''<button type="button" class="game-card" data-game-id="{game_id}" data-open-id="{game_id}"
+    return f'''<button type="button" class="game-card{trophy_class}" data-game-id="{game_id}" data-open-id="{game_id}"
     data-game-title="{title}" data-completion-status="{status}" data-ta-achievements-complete="{str(game['ta_achievements_complete']).lower()}"
     data-completion-source="trueachievements" data-image-available="{str(bool(game['image_src'])).lower()}"
     aria-label="View details for {title}">
@@ -213,9 +216,11 @@ def row_html(game: dict[str, Any]) -> str:
     title = esc(game['title'])
     status = game['completion_status']
     a, gs, ta = game['achievements'], game['gamerscore'], game['ta_score']
+    trophy_class = ' trophy-featured' if game['trophy_case'] else ''
+    trophy_icon = '<svg class="table-trophy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4ZM7 6H4v2a4 4 0 0 0 4 4M17 6h3v2a4 4 0 0 1-4 4"/></svg>' if game['trophy_case'] else ''
     tag = f'<span class="table-tag {"complete" if status == "completed" else ""}">{esc(status_text(game))}</span>'
-    return (f'<tr data-game-id="{game["id"]}" data-completion-status="{status}" data-ta-achievements-complete="{str(game["ta_achievements_complete"]).lower()}" data-completion-source="trueachievements">'
-        f'<td><button class="table-name" type="button" data-open-id="{game["id"]}">{title}</button></td>'
+    return (f'<tr class="{trophy_class.strip()}" data-game-id="{game["id"]}" data-completion-status="{status}" data-ta-achievements-complete="{str(game["ta_achievements_complete"]).lower()}" data-completion-source="trueachievements">'
+        f'<td><button class="table-name" type="button" data-open-id="{game["id"]}">{trophy_icon}{title}</button></td>'
         f'<td>{tag}</td><td class="table-percent">{game["completion_percentage"]:g}%</td>'
         f'<td>{integer(a["earned"])} / {integer(a["total"])}</td>'
         f'<td>{integer(gs["earned"])}</td><td>{integer(ta["earned"])}</td><td>{game["ta_ratio"]:.4f}×</td>'
@@ -239,14 +244,6 @@ def stat_html(label: str, value: str, sub: str) -> str:
     return (f'<article class="stat"><div class="stat-top">{icon}<span class="stat-label">{esc(label)}</span></div>'
             f'<strong class="stat-value">{esc(value)}</strong></article>')
 
-
-def trophy_tile(game: dict[str, Any]) -> str:
-    title=esc(game['title'])
-    if game['image_src']:
-        visual=f'<img src="{esc(game["image_src"])}" alt="{title} achievement summary" loading="lazy" decoding="async">'
-    else:
-        visual=f'<span class="trophy-placeholder">{ICON}</span>'
-    return f'<button type="button" class="trophy-tile" data-open-id="{game["id"]}" title="{title}" aria-label="View {title}"><span class="trophy-art">{visual}</span><span class="trophy-name">{title}</span></button>'
 
 
 def timestamp_label(value: Any) -> str:
@@ -275,8 +272,6 @@ def build_html(data: dict[str, Any], games: list[dict[str, Any]], missing_count:
     percentage = 100.0 * total_complete / count if count else 0
     achievements_pct = 100.0 * total_ach / total_ach_possible if total_ach_possible else 0
     update = timestamp_label(data.get('exported_at'))
-    trophy_games = sorted((g for g in games if isinstance(g['trophy_case_position'], int) and g['trophy_case_position'] > 0), key=lambda g: (g['trophy_case_position'],g['id']))
-    trophy_count = len(trophy_games)
     overall_ratio = total_ta / total_gs if total_gs else 0.0
     stats = ''.join([
         stat_html('Total games', integer(count), ''),
@@ -286,9 +281,6 @@ def build_html(data: dict[str, Any], games: list[dict[str, Any]], missing_count:
         stat_html('Gamerscore', integer(total_gs), ''),
         stat_html('Achievements', integer(total_ach), ''),
     ])
-    trophy_markup = '\n'.join(trophy_tile(g) for g in trophy_games)
-    if not trophy_markup:
-        trophy_markup = '<p class="trophy-empty">Trophy Case order not synced yet. Open your Trophy Case in Chrome and use Sync Trophy Case in the TA Collector extension, then regenerate this site.</p>'
     json_payload = json.dumps({'games': games}, ensure_ascii=False, separators=(',', ':'))
     json_payload = json_payload.replace('&', '\\u0026').replace('<', '\\u003c').replace('>', '\\u003e').replace('\u2028','\\u2028').replace('\u2029','\\u2029')
     game_cards = '\n'.join(card_html(g) for g in games)
@@ -308,10 +300,6 @@ def build_html(data: dict[str, Any], games: list[dict[str, Any]], missing_count:
   <div class="nav-links"><a class="nav-link" href="{esc(source_url)}" target="_blank" rel="noopener noreferrer">{ICON}<span>TrueAchievements</span></a><a class="nav-link" href="{esc(GITHUB_URL)}" target="_blank" rel="noopener noreferrer">&lt;/&gt;<span>GitHub</span></a></div>
 </nav></header>
 <main id="top" class="container">
-<section class="trophy-section" aria-labelledby="trophy-title">
-  <div class="trophy-heading"><div><h1 id="trophy-title">Trophy Case</h1></div><a class="trophy-external" href="https://www.trueachievements.com/gamer/ForensicFlubber/trophycase" target="_blank" rel="noopener noreferrer">View on TA ↗</a></div>
-  <div class="trophy-grid">{trophy_markup}</div>
-</section>
 <section class="stats" aria-label="Achievement overview">{stats}</section>
 
 <section class="library" aria-labelledby="library-title"><div class="section-heading">
@@ -320,7 +308,7 @@ def build_html(data: dict[str, Any], games: list[dict[str, Any]], missing_count:
 </div>
 <div class="filters" aria-label="Filter and sort games">
   <label class="field search-field"><span class="field-label">SEARCH GAMES</span><span class="input-wrap">{SEARCH_ICON}<input id="search" type="search" placeholder="Search by title..." autocomplete="off"></span></label>
-  <div class="button-filter"><span class="field-label">ACHIEVEMENT STATUS</span><div class="filter-actions" role="group" aria-label="Achievement status"><button type="button" class="filter-btn is-active" data-filter-status="all" aria-pressed="true">All games</button><button type="button" class="filter-btn" data-filter-status="completed" aria-pressed="false">Complete</button><button type="button" class="filter-btn" data-filter-status="incomplete" aria-pressed="false">In progress</button></div></div>
+  <div class="button-filter"><span class="field-label">GAME FILTER</span><div class="filter-actions" role="group" aria-label="Game filter"><button type="button" class="filter-btn is-active" data-filter-status="all" aria-pressed="true">All games</button><button type="button" class="filter-btn" data-filter-status="completed" aria-pressed="false">Complete</button><button type="button" class="filter-btn" data-filter-status="incomplete" aria-pressed="false">In progress</button><button type="button" class="filter-btn" data-filter-status="trophy" aria-pressed="false">Trophy Case</button></div></div>
   <div class="button-filter"><span class="field-label">IMAGES</span><div class="filter-actions" role="group" aria-label="Image availability"><button type="button" class="filter-btn is-active" data-filter-image="all" aria-pressed="true">All</button><button type="button" class="filter-btn" data-filter-image="available" aria-pressed="false">Archived</button><button type="button" class="filter-btn" data-filter-image="missing" aria-pressed="false">Missing</button></div></div>
   <label class="field sort-field"><span class="field-label">SORT BY</span><span class="select-wrap"><select id="sort"><option value="activity-asc" selected>Recently Unlocked (Most Recent)</option><option value="activity-desc">Recently Unlocked (Least Recent)</option><option value="ratio-desc">TA ratio (highest)</option><option value="ta-desc">TA score (highest)</option><option value="gs-desc">Gamerscore (highest)</option><option value="ach-desc">Achievements earned</option><option value="completion-desc">Completion (highest)</option><option value="completion-asc">Completion (lowest)</option><option value="title-asc">Title A–Z</option><option value="title-desc">Title Z–A</option></select></span></label>
 </div>
@@ -357,6 +345,7 @@ def make_site(args: argparse.Namespace) -> tuple[Path, dict[str, int]]:
     (dest / 'data').mkdir(parents=True, exist_ok=True)
     shutil.copy2(ASSETS / 'style.css', dest / 'assets' / 'style.css')
     shutil.copy2(ASSETS / 'app.js', dest / 'assets' / 'app.js')
+    shutil.copy2(ASSETS / 'violet-currents.webp', dest / 'assets' / 'violet-currents.webp')
     records, seen = [], set()
     expected = 0
     missing_expected: list[dict[str,Any]] = []

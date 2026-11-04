@@ -55,7 +55,7 @@
     const query = search.value.trim().toLocaleLowerCase();
     const visible = games.filter(g => {
       return (!query || g.title.toLocaleLowerCase().includes(query))
-        && (selectedStatus === 'all' || g.completion_status === selectedStatus)
+        && (selectedStatus === 'all' || (selectedStatus === 'trophy' ? g.trophy_case === true : g.completion_status === selectedStatus))
         && (selectedImage === 'all' || (selectedImage === 'available') === Boolean(g.image_src));
     }).sort(comparators[activeSort] || comparators['activity-asc']);
     gallery.replaceChildren(...visible.map(g => cardById.get(String(g.id))).filter(Boolean));
